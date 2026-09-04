@@ -27,6 +27,8 @@
                 #:sanitize-for-json)
   (:import-from #:cl-mcp/src/package-context
                 #:call-with-package-context)
+  (:import-from #:cl-mcp/src/utils/lenient-read
+                #:call-with-lenient-real-packages)
   (:import-from #:cl-mcp/src/lisp-edit-form-core
                 #:%resolve-named-readtable
                 #:%parse-readtable-designator
@@ -96,7 +98,9 @@ Signals PATCH-OPERATION-ERROR if OLD-TEXT is not found or occurs multiple times.
                                            package-name source-path)
   "Validate that FORM-TEXT parses as a single complete Lisp form.
 Does NOT attempt parinfer repair. Signals PATCH-OPERATION-ERROR if the text
-does not parse correctly."
+does not parse correctly. Symbols the image cannot resolve in a REAL package
+do not fail the parse (see *LENIENT-REAL-PACKAGES*); they come back as the
+second value, names in source order, for the caller to report."
   (let* ((*read-eval* nil)
          (custom-rt (%resolve-named-readtable readtable-designator))
          (*readtable*
@@ -104,22 +108,24 @@ does not parse correctly."
                custom-rt
                (copy-readtable nil))))
     (handler-case
-        (call-with-package-context
-         package-name
+        (call-with-lenient-real-packages
          (lambda ()
-           (multiple-value-bind (form pos)
-               (read-from-string form-text nil :eof)
-             (when (eq form :eof)
-               (error 'patch-operation-error
-                      :reason "patch produced an empty form"))
-             (let ((rest-start (or (position-if-not #'%whitespace-char-p
-                                                    form-text :start pos)
-                                   (length form-text))))
-               (when (< rest-start (length form-text))
-                 (error 'patch-operation-error
-                        :reason "patch produced malformed form text (trailing content after form)")))
-             form-text))
-         :source-path source-path)
+           (call-with-package-context
+            package-name
+            (lambda ()
+              (multiple-value-bind (form pos)
+                  (read-from-string form-text nil :eof)
+                (when (eq form :eof)
+                  (error 'patch-operation-error
+                         :reason "patch produced an empty form"))
+                (let ((rest-start (or (position-if-not #'%whitespace-char-p
+                                                       form-text :start pos)
+                                      (length form-text))))
+                  (when (< rest-start (length form-text))
+                    (error 'patch-operation-error
+                           :reason "patch produced malformed form text (trailing content after form)")))
+                form-text))
+            :source-path source-path)))
       (patch-operation-error (e)
         (error e))
       (error (e)
@@ -139,6 +145,11 @@ OLD-TEXT must match exactly once within the form (whitespace-sensitive).
 Does NOT auto-repair parentheses; if the patch breaks form structure, an error
 is signaled immediately and no changes are written to disk.
 
+A symbol the image cannot resolve in a package that exists — the file is
+ahead of the image, or a typo — never stops the patch; it is REPORTED: as
+the third value (a list of \"PACKAGE:SYMBOL\" names, file and new text
+together) and, in a dry run, under \"unresolved_symbols\".
+
 When DRY-RUN is true, no changes are written; a preview hash-table is returned.
 
 READTABLE, if provided, specifies a named-readtable designator (e.g., :interpol-syntax)
@@ -149,25 +160,32 @@ to use for parsing the file."
     (error "old_text and new_text must be strings"))
   (unless (member dry-run '(t nil))
     (error "dry-run must be boolean"))
-  (multiple-value-bind (abs rel original nodes target target-snippet _ file-package-name)
+  (multiple-value-bind (abs rel original nodes target target-snippet _ file-package-name
+                        unresolved-in-file)
       (%locate-target-form file-path form-type form-name readtable)
     (declare (ignore _))
     (multiple-value-bind (updated modified-form)
         (%apply-patch-operation original target old-text new-text)
-      (let ((would-change (not (string= original updated))))
-        (when would-change
-          (%validate-form-parseable
-           modified-form
-           (or readtable
-               (%detect-readtable-before-node nodes target))
-           file-package-name
-           abs))
+      (let* ((would-change (not (string= original updated)))
+             (unresolved-in-patch
+               (when would-change
+                 (nth-value 1
+                            (%validate-form-parseable
+                             modified-form
+                             (or readtable
+                                 (%detect-readtable-before-node nodes target))
+                             file-package-name
+                             abs))))
+             (unresolved (remove-duplicates
+                          (append unresolved-in-file unresolved-in-patch)
+                          :test #'string= :from-end t)))
         (log-event :debug "lisp.patch.form"
                    "path" (namestring abs)
                    "form_type" form-type
                    "form_name" form-name
                    "dry_run" dry-run
-                   "would_change" would-change)
+                   "would_change" would-change
+                   "unresolved" (length unresolved))
         (cond
           (dry-run
            (let ((result (make-hash-table :test #'equal)))
@@ -175,13 +193,14 @@ to use for parsing the file."
                    (gethash "original" result) target-snippet
                    (gethash "preview" result) modified-form
                    (gethash "file_path" result) (namestring abs)
-                   (gethash "operation" result) "patch")
+                   (gethash "operation" result) "patch"
+                   (gethash "unresolved_symbols" result) unresolved)
              result))
           (would-change
            (fs-write-file rel updated)
-           (values updated t))
+           (values updated t unresolved))
           (t
-           (values updated nil)))))))
+           (values updated nil unresolved)))))))
 
 (define-tool "lisp-patch-form"
   :description "Scoped text replacement within a matched top-level Lisp form.
@@ -221,7 +240,7 @@ is used instead of Eclector, which means comments are NOT preserved."))
              (error 'arg-validation-error :arg-name "readtable"
                     :message (format nil "~A" e))))))
     (handler-case
-        (multiple-value-bind (updated changed-p)
+        (multiple-value-bind (updated changed-p unresolved)
             (lisp-patch-form :file-path file_path
                              :form-type form_type
                              :form-name form_name
@@ -233,10 +252,12 @@ is used instead of Eclector, which means comments are NOT preserved."))
               (let* ((preview (gethash "preview" updated))
                      (would-change (eq t (gethash "would_change" updated)))
                      (original-form (gethash "original" updated))
+                     (unresolved (gethash "unresolved_symbols" updated))
                      (summary (format nil "Dry-run patch on ~A ~A in ~A (~:[no change~;would change~])~
+                                      ~@[~%NOTE: not resolvable in this image (stale image or typo): ~{~A~^, ~}~]~
                                       ~%~%--- original ---~%~A~%~%--- preview ---~%~A"
                                       form_type form_name file_path would-change
-                                      original-form preview)))
+                                      unresolved original-form preview)))
                 (result id
                         (make-ht "path" file_path
                                  "operation" "patch"
@@ -245,14 +266,16 @@ is used instead of Eclector, which means comments are NOT preserved."))
                                  "would_change" (json-bool would-change)
                                  "original" original-form
                                  "preview" preview
+                                 "unresolved_symbols" (coerce unresolved 'vector)
                                  "content" (text-content summary))))
               (let ((summary
                      (if (not changed-p)
                          (format nil "No change to ~A ~A in ~A (old_text already matches new_text)"
                                  form_type form_name file_path)
-                         (format nil "Applied patch to ~A ~A in ~A (~D chars → ~D chars)"
+                         (format nil "Applied patch to ~A ~A in ~A (~D chars → ~D chars)~
+                                      ~@[~%NOTE: not resolvable in this image (stale image or typo): ~{~A~^, ~}~]"
                                  form_type form_name file_path
-                                 (length old_text) (length new_text)))))
+                                 (length old_text) (length new_text) unresolved))))
                 (result id
                         (apply #'make-ht
                                "path" file_path
@@ -260,6 +283,7 @@ is used instead of Eclector, which means comments are NOT preserved."))
                                "form_name" form_name
                                "would_change" (json-bool changed-p)
                                "bytes" (length updated)
+                               "unresolved_symbols" (coerce unresolved 'vector)
                                "content" (text-content summary)
                                (when changed-p
                                  (list "delta" (- (length new_text) (length old_text)))))))))

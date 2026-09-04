@@ -28,6 +28,8 @@
                 #:ensure-trailing-newline)
   (:import-from #:cl-mcp/src/package-context
                 #:call-with-package-context)
+  (:import-from #:cl-mcp/src/utils/lenient-read
+                #:call-with-lenient-real-packages)
   (:import-from #:cl-mcp/src/lisp-edit-form-core
                 #:%resolve-named-readtable
                 #:%parse-readtable-designator
@@ -103,7 +105,11 @@ blank line. For EOF boundary use a single newline."
 (defun %validate-and-repair-content (content &optional readtable-designator
                                              package-name source-path)
   "Ensure CONTENT is a single valid form. If parsing fails, attempt to repair
-using parinfer:apply-indent-mode. Returns the validated (possibly repaired) content.
+using parinfer:apply-indent-mode. Returns three values: the validated (possibly
+repaired) content, a parinfer warning or NIL, and the names (\"PACKAGE:SYMBOL\")
+the image could not resolve in a real package — accepted, not refused, since
+inside an edit that is usually a stale image rather than a typo (see
+*LENIENT-REAL-PACKAGES*).
 When READTABLE-DESIGNATOR is provided, use that named-readtable for parsing.
 Unknown package prefixes are handled leniently via stub packages.
 
@@ -113,7 +119,8 @@ it with a `;; removed' comment marker, and `insert_*' to place bare
 comments near a target form."
   (let* ((*read-eval* nil)
          (custom-rt (%resolve-named-readtable readtable-designator))
-         (*readtable* (if custom-rt custom-rt (copy-readtable nil))))
+         (*readtable* (if custom-rt custom-rt (copy-readtable nil)))
+         (unresolved '()))
     (labels ((whitespace-char-p (ch)
                (member ch '(#\Space #\Tab #\Newline #\Return)))
              (comment-only-p (text)
@@ -152,35 +159,40 @@ comments near a target form."
                    (error nil nil))))
              (try-parse (text)
                (handler-case
-                   (call-with-package-context
-                    package-name
-                    (lambda ()
-                      (multiple-value-bind (form pos)
-                          (read-from-string text nil :eof)
-                        (when (eq form :eof)
-                          (if (comment-only-p text)
-                              (return-from try-parse text)
-                              (error "content is empty")))
-                        (let* ((len (length text))
-                               (rest-start
-                                 (or (position-if-not #'whitespace-char-p
-                                                      text :start pos)
-                                     len)))
-                          (when (< rest-start len)
-                            (if (rest-parses-as-complete-forms-p text rest-start)
-                                (error 'multiple-top-level-forms-error)
-                                (error
-                                 "content has trailing malformed characters after the first form"))))
-                        text))
-                    :source-path source-path)
+                   (multiple-value-bind (parsed names)
+                       (call-with-lenient-real-packages
+                        (lambda ()
+                          (call-with-package-context
+                           package-name
+                           (lambda ()
+                             (multiple-value-bind (form pos)
+                                 (read-from-string text nil :eof)
+                               (when (eq form :eof)
+                                 (if (comment-only-p text)
+                                     (return-from try-parse text)
+                                     (error "content is empty")))
+                               (let* ((len (length text))
+                                      (rest-start
+                                        (or (position-if-not #'whitespace-char-p
+                                                             text :start pos)
+                                            len)))
+                                 (when (< rest-start len)
+                                   (if (rest-parses-as-complete-forms-p text rest-start)
+                                       (error 'multiple-top-level-forms-error)
+                                       (error
+                                        "content has trailing malformed characters after the first form"))))
+                               text))
+                           :source-path source-path)))
+                     (setf unresolved names)
+                     parsed)
                  (error (e)
                    (values nil e)))))
       (when (comment-only-p content)
-        (return-from %validate-and-repair-content (values content nil)))
+        (return-from %validate-and-repair-content (values content nil nil)))
       (multiple-value-bind (result err)
           (try-parse content)
         (if result
-            (values result nil)
+            (values result nil unresolved)
             (let ((repaired (apply-indent-mode content)))
               (multiple-value-bind (repaired-result repaired-err)
                   (try-parse repaired)
@@ -192,7 +204,8 @@ comments near a target form."
                      (values repaired-result
                              (format nil "~D closing delimiter~:P ~
                                           ~[were~;was~:;were~] added by parinfer"
-                                     added-count added-count))))
+                                     added-count added-count)
+                             unresolved)))
                   ((and (typep err 'multiple-top-level-forms-error)
                         (typep repaired-err 'multiple-top-level-forms-error))
                    (error err))
@@ -344,6 +357,11 @@ replace/insert_before/insert_after but ignored for delete.
 OPERATION must be one of: \"replace\", \"insert_before\", \"insert_after\", \"delete\".
 Missing closing parentheses are auto-repaired using parinfer (non-delete ops).
 
+A symbol the image cannot resolve in a package that exists — the file is
+ahead of the image, or a typo — never stops the edit; it is REPORTED: as
+the fourth value (a list of \"PACKAGE:SYMBOL\" names, file and content
+together) and, in a dry run, under \"unresolved_symbols\".
+
 When DRY-RUN is true, no changes are written; a preview hash-table is returned.
 
 READTABLE, if provided, specifies a named-readtable designator (e.g., :interpol-syntax)
@@ -365,64 +383,73 @@ to use for parsing both the file and the new content."
     (unless (or (eq op-key :delete) (stringp content))
       (error "content is required for ~A operation" operation))
     (multiple-value-bind
-        (abs rel original nodes target target-snippet _ file-package-name)
+        (abs rel original nodes target target-snippet _ file-package-name
+         unresolved-in-file)
         (%locate-target-form file-path form-type form-name readtable)
       (declare (ignore nodes _))
-      (if (eq op-key :delete)
-          ;; Delete path: no content validation needed
-          (let* ((updated
-                  (%apply-operation original target op-key nil
-                                    normalize-blank-lines))
-                 (would-change (not (string= original updated))))
-            (log-event :debug "lisp.edit.form" "path" (namestring abs)
-                       "operation" op-normalized "form_type" form-type
-                       "form_name" form-name "normalize_blank_lines"
-                       normalize-blank-lines "bytes" (length updated) "dry_run"
-                       dry-run "would_change" would-change)
-            (cond
-             (dry-run
-              (let ((result (make-hash-table :test #'equal)))
-                (setf (gethash "would_change" result) would-change
-                      (gethash "original" result) target-snippet
-                      (gethash "preview" result) updated
-                      (gethash "preview_form" result)
-                      (%preview-form-text op-key nil normalize-blank-lines)
-                      (gethash "file_path" result) (namestring abs)
-                      (gethash "operation" result) op-normalized)
-                result))
-             (would-change (fs-write-file rel updated)
-              (values updated nil t))
-             (t (values updated nil nil))))
-          ;; Non-delete path: validate and repair content
-          (multiple-value-bind (validated-content parinfer-warning)
-              (%validate-and-repair-content content readtable file-package-name
-                                            abs)
+      (flet ((merge-unresolved (more)
+               (remove-duplicates (append unresolved-in-file more)
+                                  :test #'string= :from-end t)))
+        (if (eq op-key :delete)
+            ;; Delete path: no content validation needed
             (let* ((updated
-                    (%apply-operation original target op-key validated-content
-                                      normalize-blank-lines))
-                   (would-change (not (string= original updated))))
+                     (%apply-operation original target op-key nil
+                                       normalize-blank-lines))
+                   (would-change (not (string= original updated)))
+                   (unresolved (merge-unresolved nil)))
               (log-event :debug "lisp.edit.form" "path" (namestring abs)
                          "operation" op-normalized "form_type" form-type
                          "form_name" form-name "normalize_blank_lines"
                          normalize-blank-lines "bytes" (length updated) "dry_run"
                          dry-run "would_change" would-change)
               (cond
-               (dry-run
-                (let ((result (make-hash-table :test #'equal)))
-                  (setf (gethash "would_change" result) would-change
-                        (gethash "original" result) target-snippet
-                        (gethash "preview" result) updated
-                        (gethash "preview_form" result)
-                        (%preview-form-text op-key validated-content
-                                            normalize-blank-lines)
-                        (gethash "file_path" result) (namestring abs)
-                        (gethash "operation" result) op-normalized)
-                  (when parinfer-warning
-                    (setf (gethash "parinfer_warning" result) parinfer-warning))
-                  result))
-               (would-change (fs-write-file rel updated)
-                (values updated parinfer-warning t))
-               (t (values updated parinfer-warning nil)))))))))
+                (dry-run
+                 (let ((result (make-hash-table :test #'equal)))
+                   (setf (gethash "would_change" result) would-change
+                         (gethash "original" result) target-snippet
+                         (gethash "preview" result) updated
+                         (gethash "preview_form" result)
+                         (%preview-form-text op-key nil normalize-blank-lines)
+                         (gethash "file_path" result) (namestring abs)
+                         (gethash "operation" result) op-normalized
+                         (gethash "unresolved_symbols" result) unresolved)
+                   result))
+                (would-change (fs-write-file rel updated)
+                 (values updated nil t unresolved))
+                (t (values updated nil nil unresolved))))
+            ;; Non-delete path: validate and repair content
+            (multiple-value-bind (validated-content parinfer-warning unresolved-in-content)
+                (%validate-and-repair-content content readtable file-package-name
+                                              abs)
+              (let* ((updated
+                       (%apply-operation original target op-key validated-content
+                                         normalize-blank-lines))
+                     (would-change (not (string= original updated)))
+                     (unresolved (merge-unresolved unresolved-in-content)))
+                (log-event :debug "lisp.edit.form" "path" (namestring abs)
+                           "operation" op-normalized "form_type" form-type
+                           "form_name" form-name "normalize_blank_lines"
+                           normalize-blank-lines "bytes" (length updated) "dry_run"
+                           dry-run "would_change" would-change
+                           "unresolved" (length unresolved))
+                (cond
+                  (dry-run
+                   (let ((result (make-hash-table :test #'equal)))
+                     (setf (gethash "would_change" result) would-change
+                           (gethash "original" result) target-snippet
+                           (gethash "preview" result) updated
+                           (gethash "preview_form" result)
+                           (%preview-form-text op-key validated-content
+                                               normalize-blank-lines)
+                           (gethash "file_path" result) (namestring abs)
+                           (gethash "operation" result) op-normalized
+                           (gethash "unresolved_symbols" result) unresolved)
+                     (when parinfer-warning
+                       (setf (gethash "parinfer_warning" result) parinfer-warning))
+                     result))
+                  (would-change (fs-write-file rel updated)
+                   (values updated parinfer-warning t unresolved))
+                  (t (values updated parinfer-warning nil unresolved))))))))))
 
 (define-tool "lisp-edit-form"
   :description "Structure-aware edit of a top-level Lisp form using Eclector CST parsing.
@@ -466,7 +493,7 @@ is used instead of Eclector, which means comments are NOT preserved."))
       (error 'arg-validation-error :arg-name "content"
              :message (format nil "content is required for ~A operation" operation)))
     (handler-case
-        (multiple-value-bind (updated parinfer-warning changed-p)
+        (multiple-value-bind (updated parinfer-warning changed-p unresolved)
             (lisp-edit-form :file-path file_path
                             :form-type form_type
                             :form-name form_name
@@ -486,9 +513,12 @@ is used instead of Eclector, which means comments are NOT preserved."))
                      (pw (gethash "parinfer_warning" updated))
                      (summary
                       (format nil "Dry-run ~A on ~A ~A in ~A (~:[no change~;would change~])~
-                                   ~@[~%WARNING: ~A~]~@[~%~%--- original ---~%~A~]~
+                                   ~@[~%WARNING: ~A~]~
+                                   ~@[~%NOTE: not resolvable in this image (stale image or typo): ~{~A~^, ~}~]~
+                                   ~@[~%~%--- original ---~%~A~]~
                                    ~@[~%~%--- preview ---~%~A~]"
                               operation form_type form_name file_path would-change pw
+                              (gethash "unresolved_symbols" updated)
                               (%truncate-snippet original-form)
                               (%truncate-snippet preview-form))))
                 (result id
@@ -501,6 +531,7 @@ is used instead of Eclector, which means comments are NOT preserved."))
                                "original" original-form
                                "preview" preview
                                "preview_form" preview-form
+                               "unresolved_symbols" (coerce (gethash "unresolved_symbols" updated) 'vector)
                                "content" (text-content summary)
                                (when pw
                                  (list "parinfer_warning" pw)))))
@@ -510,8 +541,10 @@ is used instead of Eclector, which means comments are NOT preserved."))
                         (format nil "No change to ~A ~A in ~A (content matches existing form)~@[~%WARNING: ~A~]"
                                 form_type form_name file_path parinfer-warning))
                        (t
-                        (format nil "Applied ~A to ~A ~A in ~A (~D chars)~@[~%WARNING: ~A~]"
-                                operation form_type form_name file_path (length updated) parinfer-warning)))))
+                        (format nil "Applied ~A to ~A ~A in ~A (~D chars)~@[~%WARNING: ~A~]~
+                                     ~@[~%NOTE: not resolvable in this image (stale image or typo): ~{~A~^, ~}~]"
+                                operation form_type form_name file_path (length updated) parinfer-warning
+                                unresolved)))))
                 (result id
                         (make-ht "path" file_path
                                  "operation" operation
@@ -519,6 +552,7 @@ is used instead of Eclector, which means comments are NOT preserved."))
                                  "form_name" form_name
                                  "would_change" (json-bool changed-p)
                                  "bytes" (length updated)
+                                 "unresolved_symbols" (coerce unresolved 'vector)
                                  "content" (text-content summary))))))
       (multiple-top-level-forms-error ()
         (if (and (protocol-version state)

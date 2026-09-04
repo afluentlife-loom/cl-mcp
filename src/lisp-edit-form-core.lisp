@@ -18,6 +18,8 @@
                 #:parse-top-level-forms)
   (:import-from #:cl-mcp/src/package-context
                 #:extract-in-package-name-from-text)
+  (:import-from #:cl-mcp/src/utils/lenient-read
+                #:call-with-lenient-real-packages)
   (:import-from #:cl-mcp/src/project-root
                 #:*project-root*)
   (:import-from #:cl-mcp/src/fs
@@ -277,7 +279,13 @@ before TARGET's start position."
 
 (defun %locate-target-form (file-path form-type form-name readtable)
   "Shared prologue: resolve paths, read file, parse, find target, extract snippet.
-Returns eight values:
+Every read of the file — the header scan for IN-PACKAGE as well as the
+parse — runs LENIENT ABOUT REAL PACKAGES (see *LENIENT-REAL-PACKAGES*): a
+symbol the image does not know does not stop the locate; inside an edit the
+usual reason is a stale image, not a typo, and it is reported instead.
+(The first cut wrapped only the parse; the header scan reads the first
+non-header form too, with the CL reader, and refused there — 2026-09-04.)
+Returns nine values:
   ABS — absolute pathname
   REL — relative namestring for FS write
   ORIGINAL — full file text
@@ -285,19 +293,26 @@ Returns eight values:
   TARGET — matched CST node
   TARGET-SNIPPET — text of the matched form
   FORM-TYPE-STR — downcased form-type string
-  FILE-PACKAGE-NAME — package named by the file's first IN-PACKAGE form"
+  FILE-PACKAGE-NAME — package named by the file's first IN-PACKAGE form
+  UNRESOLVED — names (\"PACKAGE:SYMBOL\") the image could not resolve"
   (let ((form-type-str (string-downcase form-type)))
     (multiple-value-bind (abs rel)
         (%normalize-paths file-path)
-      (let* ((original (fs-read-file abs))
-             (nodes (parse-top-level-forms original
+      (let ((original (fs-read-file abs)))
+        (multiple-value-bind (parsed unresolved)
+            (call-with-lenient-real-packages
+             (lambda ()
+               (list (parse-top-level-forms original
                                            :readtable readtable
-                                           :source-path abs))
-             (target (%find-target nodes form-type-str form-name)))
-        (unless target
-          (error "Form ~A ~A not found in ~A" form-type form-name (namestring abs)))
-        (let ((target-snippet (subseq original
-                                     (cst-node-start target)
-                                     (cst-node-end target))))
-          (values abs rel original nodes target target-snippet form-type-str
-                  (extract-in-package-name-from-text original)))))))
+                                           :source-path abs)
+                     (extract-in-package-name-from-text original))))
+          (destructuring-bind (nodes file-package-name) parsed
+            (let ((target (%find-target nodes form-type-str form-name)))
+              (unless target
+                (error "Form ~A ~A not found in ~A" form-type form-name (namestring abs)))
+              (let ((target-snippet (subseq original
+                                            (cst-node-start target)
+                                            (cst-node-end target))))
+                (values abs rel original nodes target target-snippet form-type-str
+                        file-package-name
+                        unresolved)))))))))

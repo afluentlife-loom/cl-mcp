@@ -21,6 +21,7 @@
   (:import-from #:cl-mcp/tests/lisp-edit-form-test)
   (:import-from #:cl-mcp/tests/lisp-patch-form-test)
   (:import-from #:cl-mcp/tests/lenient-read-test)
+  (:import-from #:cl-mcp/tests/lenient-real-package-test)
   (:import-from #:cl-mcp/tests/object-registry-test)
   (:import-from #:cl-mcp/tests/package-context-test)
   (:import-from #:cl-mcp/tests/response-builders-test)
