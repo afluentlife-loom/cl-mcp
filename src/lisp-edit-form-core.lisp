@@ -256,8 +256,13 @@ provide a non-empty name (e.g. \"my-pkg\" instead of \"#:\" alone)"))
                                        i
                                        (let ((candidates (%definition-candidates form form-type)))
                                          (or (car (last candidates)) (first candidates)))))))
-           (error "Multiple matches for ~A ~A. Specify an index:~%~{  ~A~%~}"
-                  form-type form-name descriptions)))))))
+           ;; The syntax is IN the message: measured 2026-09-04, a
+           ;; caller who read `Specify an index' tried an :index
+           ;; keyword, then went looking in the source for the [N]
+           ;; suffix this function has always accepted.
+           (error "Multiple matches for ~A ~A. Specify an index by suffixing ~
+                   form_name, e.g. ~S:~%~{  ~A~%~}"
+                  form-type form-name (format nil "~A[0]" form-name) descriptions)))))))
 
 (defun %detect-readtable-before-node (nodes target)
   "Return the readtable designator active before TARGET, or NIL.
