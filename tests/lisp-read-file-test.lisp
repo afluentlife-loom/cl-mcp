@@ -420,7 +420,7 @@ returned list is the assertion the signature-layout tests below are built on."
         (skip "cl-interpol not available")))))
 
 (deftest lisp-read-file-read-eval-disabled-in-package-context-scan
-  (testing "package-context header scan does not execute #. forms"
+  (testing "package-context header scan reads #. forms as data and does not execute them"
     (let* ((flag-path (merge-pathnames "tests/tmp/lisp-read-read-eval-flag"
                                        (system-source-directory :cl-mcp)))
            (content
@@ -439,20 +439,10 @@ returned list is the assertion the signature-layout tests below are built on."
            (with-temp-lisp-file "tests/tmp/lisp-read-read-eval.lisp"
                content
              (lambda (path)
-               (let ((error-message
-                       (handler-case
-                           (progn
-                             (lisp-read-file path)
-                             nil)
-                         (error (e)
-                           (format nil "~A" e)))))
-                 (ok error-message)
-                 (ok (or (search "Read-time evaluation (#.) is disabled for security"
-                                 error-message)
-                         (search "*READ-EVAL*" error-message)
-                         (search "can't read #." error-message)))
-                 (ok (not (probe-file flag-path)))))))
-        (ignore-errors (delete-file flag-path)))))
+               (let ((result (lisp-read-file path)))
+                 (ok result)
+                 (ok (not (probe-file flag-path))))))
+        (ignore-errors (delete-file flag-path))))))
 
 (deftest lisp-read-file-collapsed-shows-method-qualifiers
   (testing "collapsed view includes method qualifiers like :before, :after, :around"

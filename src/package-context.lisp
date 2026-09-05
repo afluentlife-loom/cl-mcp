@@ -14,7 +14,8 @@
   (:import-from #:cl-mcp/src/utils/lenient-read
                 #:call-with-lenient-packages
                 #:call-with-managed-packages
-                #:record-homeless-on-teardown)
+                #:record-homeless-on-teardown
+                #:inert-read-eval-readtable)
   (:import-from #:uiop
                 #:directory-files
                 #:ensure-directory-pathname
@@ -137,7 +138,9 @@ Stops after the first non-header top-level form once package header forms
 have begun, to avoid descending into the rest of the file."
   (call-with-lenient-packages
    (lambda ()
-     (let ((*read-eval* nil))
+     (let ((*read-eval* nil)
+           ;; `#.' reads as data — see INERT-READ-EVAL-READTABLE.
+           (*readtable* (inert-read-eval-readtable)))
        (with-input-from-string (stream text)
          (let ((forms nil)
                (saw-header nil))

@@ -39,19 +39,19 @@
       (ok (search "readtable" error-message))
       (ok (search "interpol-syntax" error-message)))))
 
-(deftest parse-top-level-forms-read-eval-error-message
-  (testing "read-time evaluation error shows security message, not readtable suggestion"
-    (let ((error-message
-            (handler-case
-                (progn
-                  (parse-top-level-forms "#.(+ 1 2)")
-                  nil)
-              (error (e)
-                (format nil "~A" e)))))
-      (ok error-message)
-      (ok (search "security" error-message))
-      (ok (search "#." error-message))
-      (ok (null (search "readtable" error-message))))))
+(deftest parse-top-level-forms-reads-sharp-dot-without-evaluating
+  (testing "a #. form is parsed as data — (READ-TIME-EVAL expr) — and never run"
+    (let* ((flag (gensym "READ-EVAL-FIRED"))
+           (nodes (parse-top-level-forms
+                   (format nil "(defun sample () #.(progn (setf (symbol-value '~S) t) 3))"
+                           flag)))
+           (expr (find-if (lambda (n) (eq (cst-node-kind n) :expr)) nodes))
+           (body (fourth (cst-node-value expr))))
+      (ok expr)
+      (ok (string= "sample" (string-downcase (second (cst-node-value expr)))))
+      (ok (eq 'cl-mcp/src/cst:read-time-eval (first body)))
+      (ok (eq 'progn (first (second body))))
+      (ok (not (boundp flag))))))
 
 (deftest parse-top-level-forms-unknown-package-succeeds
   (testing "files with unknown package-qualified symbols parse successfully"

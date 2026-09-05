@@ -119,7 +119,8 @@ it with a `;; removed' comment marker, and `insert_*' to place bare
 comments near a target form."
   (let* ((*read-eval* nil)
          (custom-rt (%resolve-named-readtable readtable-designator))
-         (*readtable* (if custom-rt custom-rt (copy-readtable nil)))
+         ;; `#.' reads as data here, as on the CST path (see cst.lisp).
+         (*readtable* (cl-mcp/src/cst:inert-read-eval-readtable custom-rt))
          (unresolved '()))
     (labels ((whitespace-char-p (ch)
                (member ch '(#\Space #\Tab #\Newline #\Return)))

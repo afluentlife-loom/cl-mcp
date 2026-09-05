@@ -103,10 +103,8 @@ do not fail the parse (see *LENIENT-REAL-PACKAGES*); they come back as the
 second value, names in source order, for the caller to report."
   (let* ((*read-eval* nil)
          (custom-rt (%resolve-named-readtable readtable-designator))
-         (*readtable*
-           (if custom-rt
-               custom-rt
-               (copy-readtable nil))))
+         ;; `#.' reads as data here, as on the CST path (see cst.lisp).
+         (*readtable* (cl-mcp/src/cst:inert-read-eval-readtable custom-rt)))
     (handler-case
         (call-with-lenient-real-packages
          (lambda ()

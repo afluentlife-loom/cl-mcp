@@ -16,9 +16,40 @@
            #:*lenient-real-packages*
            #:*unresolved-symbols*
            #:*homeless-due-to-teardown*
-           #:record-homeless-on-teardown))
+           #:record-homeless-on-teardown
+           ;; `#.' read as data: the marker and the readtable that does it.
+           #:read-time-eval
+           #:inert-read-eval-readtable))
 
 (in-package #:cl-mcp/src/utils/lenient-read)
+
+;;; `#.' is READ, never evaluated.
+;;;
+;;; Source reaches cl-mcp to be located and edited, not run, so a `#.'
+;;; form is kept as data — (READ-TIME-EVAL <expression>) once read,
+;;; verbatim in the text. The earlier posture refused the whole file,
+;;; which protected the same property (nothing evaluates) at the cost
+;;; of making every file with a `#.(char-code ...)' in it unreachable
+;;; by the structure editors — measured 2026-09-05 on a 2,700-line
+;;; parser whose one `#.' sat inside a name helper, so a patch to an
+;;; unrelated function in it was refused. Every CL-reader site (the
+;;; package-context header scan, the CST's custom-readtable path, the
+;;; two editors' validators) uses this readtable; the eclector path
+;;; has CST-CLIENT in cst.lisp doing the same through
+;;; EVALUATE-EXPRESSION.
+(defun %inert-sharp-dot (stream subchar parameter)
+  "The `#.' reader macro for INERT-READ-EVAL-READTABLE: read the
+expression, return (READ-TIME-EVAL expression), evaluate nothing."
+  (declare (ignore subchar parameter))
+  (list 'read-time-eval (read stream t nil t)))
+
+(defun inert-read-eval-readtable (&optional base)
+  "A copy of BASE (the standard readtable when NIL) in which `#.' reads
+its expression and returns (READ-TIME-EVAL expression) without evaluating
+it."
+  (let ((rt (copy-readtable base)))
+    (set-dispatch-macro-character #\# #\. #'%inert-sharp-dot rt)
+    rt))
 
 (defvar *managed-lenient-packages* nil
   "Additional package objects treated as writable temporary packages.

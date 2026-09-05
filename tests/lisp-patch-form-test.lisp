@@ -666,3 +666,33 @@ running as root), THUNK is skipped instead."
                 "message must not carry an internal-error prefix")
             (ok (and message (search "patch-readonly-legacy" message))
                 "message should name the file that could not be written")))))))
+
+(deftest lisp-patch-form-in-file-containing-sharp-dot
+  (testing "a #. elsewhere in the file, and one inside the patched form, are read as data — the patch lands and neither runs"
+    (let* ((flag-path (project-path "tests/tmp/patch-read-eval-flag"))
+           (content
+             (format nil
+                     (concatenate
+                      'string
+                      "(defconstant +x+ #.(progn (with-open-file "
+                      "(s \"~A\" :direction :output "
+                      ":if-exists :supersede :if-does-not-exist :create) "
+                      "(write-line \"executed\" s)) 1))~%"
+                      "(defun target (c)~%  (member c '#.(list 1 2))~%  :old)~%")
+                     flag-path)))
+      (ignore-errors (delete-file flag-path))
+      (unwind-protect
+           (with-temp-file "tests/tmp/patch-form-read-eval.lisp"
+             content
+             (lambda (path)
+               (lisp-patch-form :file-path path
+                                :form-type "defun"
+                                :form-name "target"
+                                :old-text ":old"
+                                :new-text ":new")
+               (let ((after (fs-read-file path)))
+                 (ok (search ":new)" after))
+                 (ok (search "'#.(list 1 2)" after))
+                 (ok (search "#.(progn (with-open-file" after))
+                 (ok (not (probe-file flag-path))))))
+        (ignore-errors (delete-file flag-path))))))

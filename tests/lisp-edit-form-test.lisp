@@ -380,17 +380,17 @@ Used to prove that a dry-run summary does not grow with the size of the file."
           (ok (string= before (fs-read-file path))))))))
 
 (deftest lisp-edit-form-read-eval-disabled
-  (testing "read-time evaluation is disabled when parsing source"
+  (testing "a #. form in the file is neither executed nor an obstacle: the edit lands, the #. text survives"
     (let* ((flag-path (project-path "tests/tmp/read-eval-flag"))
            (content
              (format nil
                      (concatenate
                       'string
-                      "#.(progn (with-open-file "
+                      "(defun other () #.(progn (with-open-file "
                       "(s \"~A\" :direction :output "
                       ":if-exists :supersede :if-does-not-exist :create) "
                       "(write-line \"executed\" s)) "
-                      "'(defun target () :ok))~%"
+                      "'(defun target () :ok)))~%"
                       "(defun target () :ok)~%")
                      flag-path)))
       (ignore-errors (delete-file flag-path))
@@ -398,17 +398,14 @@ Used to prove that a dry-run summary does not grow with the size of the file."
            (with-temp-file "tests/tmp/edit-form-read-eval.lisp"
              content
              (lambda (path)
-               (let ((before (fs-read-file path)))
-                 (ok (handler-case
-                         (progn
-                           (lisp-edit-form :file-path path
-                                           :form-type "defun"
-                                           :form-name "target"
-                                           :operation "replace"
-                                           :content "(defun target () :updated)")
-                           nil)
-                       (error () t)))
-                 (ok (string= before (fs-read-file path)))
+               (lisp-edit-form :file-path path
+                               :form-type "defun"
+                               :form-name "target"
+                               :operation "replace"
+                               :content "(defun target () :updated)")
+               (let ((after (fs-read-file path)))
+                 (ok (search "(defun target () :updated)" after))
+                 (ok (search "#.(progn (with-open-file" after))
                  (ok (not (probe-file flag-path))))))
         (ignore-errors (delete-file flag-path))))))
 

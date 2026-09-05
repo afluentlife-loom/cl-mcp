@@ -10,7 +10,9 @@
                 #:call-with-file-package-context
                 #:call-with-package-context)
   (:import-from #:cl-mcp/src/utils/lenient-read
-                #:call-with-lenient-packages)
+                #:call-with-lenient-packages
+                #:read-time-eval
+                #:inert-read-eval-readtable)
   (:export #:cst-node
            #:cst-node-kind
            #:cst-node-value
@@ -23,7 +25,10 @@
            ;; Exported for cl-mcp/src/lisp-macroexpand, which has to answer
            ;; the same question this file answers while parsing: which
            ;; IN-PACKAGE is in effect at a given point in the file.
-           #:%in-package-form-p))
+           #:%in-package-form-p
+           ;; `#.' read as data: the marker and the readtable that does it.
+           #:read-time-eval
+           #:inert-read-eval-readtable))
 
 (in-package #:cl-mcp/src/cst)
 
@@ -90,7 +95,7 @@ or the readtable is not found."
 (defun %read-remaining-with-cl-reader (stream nodes custom-readtable)
   "Read remaining forms from STREAM using standard CL reader with CUSTOM-READTABLE.
 Returns the complete list of nodes (including previously collected NODES)."
-  (let ((*readtable* custom-readtable)
+  (let ((*readtable* (inert-read-eval-readtable custom-readtable))
         (*read-eval* nil))
     (loop
       (let ((start-pos (file-position stream)))
@@ -197,6 +202,27 @@ Returns the complete list of nodes (including previously collected NODES)."
                      :start-line (%pos->line start)
                      :end-line (%pos->line end)))))
 
+;;; `#.' is READ, never evaluated.
+;;;
+;;; Source is parsed here to be located and edited, not run, so a `#.'
+;;; form is kept as data — (READ-TIME-EVAL <expression>) in the CST
+;;; value, verbatim in the text. The earlier posture refused the whole
+;;; file, which protected the same property (nothing evaluates) at the
+;;; cost of making every file with a `#.(char-code ...)' in it
+;;; unreachable by the structure editors — measured 2026-09-05 on a
+;;; 2,700-line parser whose one `#.' sat inside a name helper, so a
+;;; patch to an unrelated function in it was refused. The CL-reader
+;;; sites (the package-context header scan, the custom-readtable path
+;;; here, the two editors' validators) get the same treatment through
+;;; INERT-READ-EVAL-READTABLE in utils/lenient-read.lisp, where the
+;;; marker symbol lives.
+(defclass cst-client (parse-result-client) ()
+  (:documentation "The parse-result client whose read-time evaluation is
+inert: EVALUATE-EXPRESSION answers (READ-TIME-EVAL expression)."))
+
+(defmethod eclector.reader:evaluate-expression ((client cst-client) expression)
+  (list 'read-time-eval expression))
+
 (defun %parse-top-level-forms-core (text readtable)
   "Parse TEXT into CST nodes assuming *PACKAGE* and *LINE-TABLE* are already bound."
   (if readtable
@@ -208,9 +234,12 @@ Returns the complete list of nodes (including previously collected NODES)."
                  (%read-remaining-with-cl-reader stream nil custom-rt))))
             (error "Readtable ~S not found." readtable)))
       (let ((*readtable* (copy-readtable))
-            (*read-eval* nil)
+            ;; T so eclector reads a `#.' expression instead of refusing
+            ;; the file; CST-CLIENT's EVALUATE-EXPRESSION then keeps it
+            ;; as data. Nothing is evaluated on this path.
+            (*read-eval* t)
             (nodes '())
-            (client (make-instance 'parse-result-client)))
+            (client (make-instance 'cst-client)))
         (with-input-from-string (stream text)
           (handler-case
               (call-with-lenient-packages
@@ -240,18 +269,11 @@ Returns the complete list of nodes (including previously collected NODES)."
                                  (%read-remaining-with-cl-reader
                                   stream nodes custom-rt)))))))))))
             (reader-error (e)
-              (let ((msg (format nil "~A" e)))
-                (if (search "READ-EVAL" msg)
-                    (error
-                     "Reader error: ~A~%~%Read-time evaluation (#.) is disabled for security. ~
-If you need to parse files containing #., consider removing or replacing the #. forms, ~
-or use a separate evaluation step."
-                     e)
-                    (error
-                     "Reader error: ~A~%~%If this file uses custom reader macros (e.g., cl-interpol's #?), ~
+              (error
+               "Reader error: ~A~%~%If this file uses custom reader macros (e.g., cl-interpol's #?), ~
 specify the 'readtable' parameter with the named-readtable designator ~
 (e.g., readtable: \"interpol-syntax\")."
-                     e)))))))))
+               e)))))))
 
 (defun parse-top-level-forms (text &key readtable source-path initial-package)
   "Parse TEXT into CST-NODE values. When READTABLE is provided, use that named readtable.
