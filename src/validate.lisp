@@ -3,7 +3,8 @@
 (defpackage #:cl-mcp/src/validate
   (:use #:cl)
   (:import-from #:cl-mcp/src/fs
-                #:fs-read-file)
+                #:fs-read-file
+                #:fs-read-whole-file)
   (:import-from #:cl-mcp/src/tools/helpers
                 #:make-ht #:result #:text-content
                 #:arg-validation-error #:json-bool)
@@ -290,7 +291,14 @@ plus a \"position\" hash with \"line\", \"column\", \"offset\"."
     (error "offset must be non-negative"))
   (when (and limit (< limit 0))
     (error "limit must be non-negative"))
-  (let ((text (or code (fs-read-file path :offset offset :limit limit)))
+  ;; No OFFSET/LIMIT means the whole file: FS-READ-FILE's cap sits below
+  ;; *CHECK-PARENS-MAX-BYTES*, so a capped read reported a balanced file
+  ;; longer than the cap as unbalanced instead of scanning it or saying
+  ;; `too-large' (2026-09-28; see FS-READ-WHOLE-FILE)
+  (let ((text (or code
+                  (if (or offset limit)
+                      (fs-read-file path :offset offset :limit limit)
+                      (fs-read-whole-file path))))
         (base-off (or offset 0)))
     (when (> (length text) *check-parens-max-bytes*)
       (let ((h (make-hash-table :test #'equal)))

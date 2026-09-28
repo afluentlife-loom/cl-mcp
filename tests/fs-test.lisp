@@ -332,3 +332,17 @@
           (ok (uiop:pathname-equal
                (uiop:ensure-directory-pathname resolved-no-slash)
                (uiop:ensure-directory-pathname resolved-with-slash))))))))
+
+(deftest fs-read-whole-file-reads-past-the-read-cap
+  (testing "FS-READ-WHOLE-FILE returns the entire file, however large *FS-READ-MAX-BYTES* is set; FS-READ-FILE keeps its cap"
+    (with-test-project-root
+      (let* ((rel "tests/tmp/fs-whole-file.txt")
+             (content (make-string 500 :initial-element #\y)))
+        (fs-write-file rel content)
+        (unwind-protect
+             (let ((cl-mcp/src/fs::*fs-read-max-bytes* 100))
+               (ok (string= content (cl-mcp/src/fs:fs-read-whole-file rel)))
+               (multiple-value-bind (text truncated) (fs-read-file rel)
+                 (ok (= 100 (length text)))
+                 (ok truncated)))
+          (ignore-errors (delete-file (fs-resolve-read-path rel))))))))

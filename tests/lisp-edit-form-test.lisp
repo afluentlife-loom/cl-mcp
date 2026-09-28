@@ -1170,3 +1170,17 @@ Used to prove that a dry-run summary does not grow with the size of the file."
               "sibling preview field reflects the deletion")
           (ok (string= before (fs-read-file path))
               "dry-run writes nothing to disk"))))))
+
+(deftest lisp-edit-form-over-read-cap-keeps-the-tail
+  (testing "replacing the first form of a file longer than *fs-read-max-bytes* keeps everything after the cap (see lisp-patch-form-test)"
+    (let* ((cl-mcp/src/fs::*fs-read-max-bytes* 200)
+           (tail (format nil "~{;; tail line ~3,'0d, a comment running past the read cap~%~}(defun tail-form ()~%  :tail)~%"
+                         (loop for i below 12 collect i)))
+           (content (format nil "(defun head-form ()~%  :old)~%~%~A" tail)))
+      (with-temp-file "tests/tmp/edit-form-over-cap.lisp" content
+        (lambda (path)
+          (lisp-edit-form :file-path path :form-type "defun" :form-name "head-form"
+                          :operation "replace" :content (format nil "(defun head-form ()~%  :new)"))
+          (let ((after (uiop:read-file-string path)))
+            (ok (search "  :new)" after))
+            (ok (search tail after) "the whole tail survives, byte for byte")))))))

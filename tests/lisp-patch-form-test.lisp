@@ -696,3 +696,42 @@ running as root), THUNK is skipped instead."
                  (ok (search "#.(progn (with-open-file" after))
                  (ok (not (probe-file flag-path))))))
         (ignore-errors (delete-file flag-path))))))
+
+;;; A FILE LONGER THAN *FS-READ-MAX-BYTES*. The editors read the file with
+;;; FS-READ-FILE, which returns only the first *FS-READ-MAX-BYTES* characters,
+;;; and wrote the patched text back: a cut landing between forms (here, in a
+;;; comment) parsed cleanly and the file lost its tail; a cut inside a string
+;;; was refused as "expected the character \" when input ended" — seen on a
+;;; real 1.14 MB test file, 2026-09-28. The cap is rebound small so the
+;;; fixtures stay small.
+
+(defparameter *over-cap-tail-lines*
+  (format nil "~{;; tail line ~3,'0d, a comment running past the read cap~%~}"
+          (loop for i below 12 collect i)))
+
+(deftest lisp-patch-form-over-read-cap-keeps-the-tail
+  (testing "a patch to the first form of a file longer than the read cap keeps everything after the cap"
+    (let* ((cl-mcp/src/fs::*fs-read-max-bytes* 200)
+           (content (format nil "(defun head-form ()~%  :old)~%~%~A(defun tail-form ()~%  :tail)~%"
+                            *over-cap-tail-lines*)))
+      (with-temp-file "tests/tmp/patch-form-over-cap.lisp" content
+        (lambda (path)
+          (lisp-patch-form :file-path path :form-type "defun" :form-name "head-form"
+                           :old-text ":old" :new-text ":new")
+          (let ((after (uiop:read-file-string path)))
+            (ok (search "  :new)" after))
+            (ok (search "(defun tail-form ()" after) "the form past the cap survives")
+            (ok (= (length after) (length content)) "same length: :old -> :new")))))))
+
+(deftest lisp-patch-form-over-read-cap-with-a-string-across-the-cap
+  (testing "a string that straddles the read cap is read whole, not refused as unterminated"
+    (let* ((cl-mcp/src/fs::*fs-read-max-bytes* 200)
+           (content (format nil "(defun head-form ()~%  :old)~%~%(defparameter *long*~%  \"~A\")~%"
+                            (make-string 400 :initial-element #\x))))
+      (with-temp-file "tests/tmp/patch-form-over-cap-string.lisp" content
+        (lambda (path)
+          (lisp-patch-form :file-path path :form-type "defun" :form-name "head-form"
+                           :old-text ":old" :new-text ":new")
+          (let ((after (uiop:read-file-string path)))
+            (ok (search "  :new)" after))
+            (ok (= (length after) (length content)))))))))

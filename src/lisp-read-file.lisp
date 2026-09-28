@@ -12,6 +12,7 @@
                 #:cst-node-start-line)
   (:import-from #:cl-mcp/src/fs
                 #:fs-read-file
+                #:fs-read-whole-file
                 #:fs-resolve-read-path)
   (:import-from #:cl-mcp/src/tools/helpers
                 #:make-ht #:result #:text-content #:arg-validation-error)
@@ -611,7 +612,8 @@ whitespace."
                                  include-comments comment-context &key readtable)
   (cond
     ((and collapsed (lisp-source-path-p resolved))
-     (let ((text (fs-read-file resolved)))
+     ;; the collapsed view PARSES the file, so it needs all of it
+     (let ((text (fs-read-whole-file resolved)))
        (handler-case
            (multiple-value-bind (display meta-table)
                (%format-lisp-file text name-scanner content-scanner include-comments comment-context

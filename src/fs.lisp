@@ -38,6 +38,7 @@
   (:import-from #:uiop/filesystem #:ensure-directories-exist)
   (:export #:fs-resolve-read-path
            #:fs-read-file
+           #:fs-read-whole-file
            #:fs-write-file
            #:fs-list-directory
            #:fs-get-project-info
@@ -104,6 +105,30 @@ Returns (VALUES content-string truncated-p file-length)."
                  "path" (namestring pn)
                  "fd" (fd-count))
       (values text truncated file-length))))
+
+(defun fs-read-whole-file (path)
+  "Return the ENTIRE text of PATH, for a caller that parses the whole file
+or writes it back — never the *FS-READ-MAX-BYTES* prefix FS-READ-FILE
+returns. Same read policy as FS-READ-FILE.
+
+FS-READ-FILE's cap bounds what a READ TOOL hands an agent; it is the wrong
+contract for a structure editor, which rewrites the file from what it read.
+The editors called FS-READ-FILE and dropped its TRUNCATED-P, so on a file
+longer than the cap a patch to an early form wrote back the capped prefix
+and the file lost its tail with the tool reporting success; a cut inside a
+string was refused instead as an unterminated string (a 1.14 MB test file,
+2026-09-28). Signals an error rather than return less than the whole file."
+  (let ((pn (allowed-read-path path)))
+    (unless pn
+      (error "Read not permitted for path ~A" path))
+    (with-open-file (in pn :direction :input :element-type 'character)
+      (let* ((buf (make-string (file-length in)))
+             (count (read-sequence buf in)))
+        ;; FILE-LENGTH counts octets, so BUF is at least long enough; a
+        ;; character still unread means the file grew under the read
+        (when (read-char in nil nil)
+          (error "~A was not read to its end" (namestring pn)))
+        (subseq buf 0 count)))))
 
 (defun %write-string-to-file (pn content)
   "Write CONTENT to PN atomically via write-to-temp-then-rename.

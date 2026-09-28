@@ -23,7 +23,7 @@
   (:import-from #:cl-mcp/src/project-root
                 #:*project-root*)
   (:import-from #:cl-mcp/src/fs
-                #:fs-read-file
+                #:fs-read-whole-file
                 #:fs-resolve-read-path)
   (:import-from #:uiop
                 #:ensure-directory-pathname
@@ -303,7 +303,10 @@ Returns nine values:
   (let ((form-type-str (string-downcase form-type)))
     (multiple-value-bind (abs rel)
         (%normalize-paths file-path)
-      (let ((original (fs-read-file abs)))
+      ;; WHOLE, never FS-READ-FILE's capped prefix: the editors write
+      ;; ORIGINAL back, so a capped read truncated every file longer than
+      ;; *FS-READ-MAX-BYTES* (2026-09-28; see FS-READ-WHOLE-FILE)
+      (let ((original (fs-read-whole-file abs)))
         (multiple-value-bind (parsed unresolved)
             (call-with-lenient-real-packages
              (lambda ()

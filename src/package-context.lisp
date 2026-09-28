@@ -8,7 +8,7 @@
 (defpackage #:cl-mcp/src/package-context
   (:use #:cl)
   (:import-from #:cl-mcp/src/fs
-                #:fs-read-file)
+                #:fs-read-whole-file)
   (:import-from #:cl-mcp/src/project-root
                 #:*project-root*)
   (:import-from #:cl-mcp/src/utils/lenient-read
@@ -223,7 +223,7 @@ have begun, to avoid descending into the rest of the file."
 (defun %package-specs-in-file (pathname)
   "Return a list of PACKAGE-SPEC values extracted from PATHNAME."
   (handler-case
-      (let* ((text (fs-read-file pathname))
+      (let* ((text (fs-read-whole-file pathname))
              (forms (%read-header-forms-from-text text))
              (specs nil))
         (dolist (form forms (nreverse specs))
@@ -359,7 +359,7 @@ project source and bind *PACKAGE* to the synthesized package while THUNK runs."
   "Call THUNK with the package context implied by FILE-PATH's IN-PACKAGE form."
   (let ((file-text
           (or text
-              (fs-read-file file-path))))
+              (fs-read-whole-file file-path))))
     (call-with-package-context
      (extract-in-package-name-from-text file-text)
      thunk

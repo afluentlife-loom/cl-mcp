@@ -225,3 +225,17 @@
       (ok (%ok? res-ok) "ok should be truthy for success")
       (ok (eq t (gethash "ok" res-ok))
           "ok for success must be t"))))
+
+(deftest lisp-check-parens-path-over-read-cap
+  (testing "a balanced file longer than *fs-read-max-bytes* checks balanced — the scan covers the whole file, not the capped prefix"
+    (let* ((root (uiop:ensure-directory-pathname (asdf:system-source-directory :cl-mcp)))
+           (cl-mcp/src/project-root:*project-root* root)
+           (abs (uiop:native-namestring (merge-pathnames "tests/tmp/parens-over-cap.lisp" root)))
+           (content (format nil "(defun a ()~%  (list ~{~d~^ ~}))~%" (loop for i below 150 collect i))))
+      (ensure-directories-exist abs)
+      (with-open-file (o abs :direction :output :if-exists :supersede)
+        (write-string content o))
+      (unwind-protect
+           (let ((cl-mcp/src/fs::*fs-read-max-bytes* 100))
+             (ok (%ok? (lisp-check-parens :path abs))))
+        (ignore-errors (delete-file abs))))))
