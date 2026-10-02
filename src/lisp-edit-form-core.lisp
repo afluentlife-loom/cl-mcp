@@ -264,6 +264,21 @@ provide a non-empty name (e.g. \"my-pkg\" instead of \"#:\" alone)"))
                    form_name, e.g. ~S:~%~{  ~A~%~}"
                   form-type form-name (format nil "~A[0]" form-name) descriptions)))))))
 
+(defun %find-target-at (nodes form-start)
+  "The top-level form node that begins at FORM-START, a character offset
+into the file — the POSITIONAL target. FORM-TYPE / FORM-NAME can only
+name a form that has a name; a top-level `(dolist ...)' or `(let ...)'
+has none, and was unaddressable. A caller with a richer address (an
+XPath over the file's code projection, say) resolves it to this offset
+from the same text the edit then reads, so the coordinate never
+outlives the call."
+  (or (find-if (lambda (node)
+                 (and (typep node 'cst-node)
+                      (eq (cst-node-kind node) :expr)
+                      (= (cst-node-start node) form-start)))
+               nodes)
+      (error "No top-level form begins at offset ~D" form-start)))
+
 (defun %detect-readtable-before-node (nodes target)
   "Return the readtable designator active before TARGET, or NIL.
 Scans NODES in order and only considers IN-READTABLE forms that appear
@@ -282,7 +297,7 @@ before TARGET's start position."
                      (consp (cdr value)))
             (setf result (second value))))))))
 
-(defun %locate-target-form (file-path form-type form-name readtable)
+(defun %locate-target-form (file-path form-type form-name readtable &optional form-start)
   "Shared prologue: resolve paths, read file, parse, find target, extract snippet.
 Every read of the file — the header scan for IN-PACKAGE as well as the
 parse — runs LENIENT ABOUT REAL PACKAGES (see *LENIENT-REAL-PACKAGES*): a
@@ -300,7 +315,7 @@ Returns nine values:
   FORM-TYPE-STR — downcased form-type string
   FILE-PACKAGE-NAME — package named by the file's first IN-PACKAGE form
   UNRESOLVED — names (\"PACKAGE:SYMBOL\") the image could not resolve"
-  (let ((form-type-str (string-downcase form-type)))
+  (let ((form-type-str (and form-type (string-downcase form-type))))
     (multiple-value-bind (abs rel)
         (%normalize-paths file-path)
       ;; WHOLE, never FS-READ-FILE's capped prefix: the editors write
@@ -315,7 +330,9 @@ Returns nine values:
                                            :source-path abs)
                      (extract-in-package-name-from-text original))))
           (destructuring-bind (nodes file-package-name) parsed
-            (let ((target (%find-target nodes form-type-str form-name)))
+            (let ((target (if form-start
+                              (%find-target-at nodes form-start)
+                              (%find-target nodes form-type-str form-name))))
               (unless target
                 (error "Form ~A ~A not found in ~A" form-type form-name (namestring abs)))
               (let ((target-snippet (subseq original

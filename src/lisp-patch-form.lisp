@@ -134,7 +134,7 @@ second value, names in source order, for the caller to report."
                                e))))))
 
 (defun lisp-patch-form (&key file-path form-type form-name old-text new-text
-                              dry-run readtable)
+                              dry-run readtable form-start)
   "Scoped text replacement within a matched top-level Lisp form.
 FILE-PATH may be absolute or relative to the project root. FORM-TYPE and
 FORM-NAME identify the target form. OLD-TEXT and NEW-TEXT specify the replacement.
@@ -151,16 +151,23 @@ together) and, in a dry run, under \"unresolved_symbols\".
 When DRY-RUN is true, no changes are written; a preview hash-table is returned.
 
 READTABLE, if provided, specifies a named-readtable designator (e.g., :interpol-syntax)
-to use for parsing the file."
-  (unless (and (stringp file-path) (stringp form-type) (stringp form-name))
-    (error "file_path, form_type, and form_name must be strings"))
+to use for parsing the file.
+
+FORM-START, an integer, targets the top-level form beginning at that
+character offset INSTEAD of FORM-TYPE / FORM-NAME — the way to reach a
+form with no name (see %FIND-TARGET-AT)."
+  (unless (and (stringp file-path)
+               (or (integerp form-start)
+                   (and (stringp form-type) (stringp form-name))))
+    (error "file_path must be a string, with form_type and form_name strings ~
+            or form_start an integer"))
   (unless (and (stringp old-text) (stringp new-text))
     (error "old_text and new_text must be strings"))
   (unless (member dry-run '(t nil))
     (error "dry-run must be boolean"))
   (multiple-value-bind (abs rel original nodes target target-snippet _ file-package-name
                         unresolved-in-file)
-      (%locate-target-form file-path form-type form-name readtable)
+      (%locate-target-form file-path form-type form-name readtable form-start)
     (declare (ignore _))
     (multiple-value-bind (updated modified-form)
         (%apply-patch-operation original target old-text new-text)

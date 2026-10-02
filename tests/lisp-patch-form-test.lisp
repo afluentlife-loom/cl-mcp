@@ -735,3 +735,32 @@ running as root), THUNK is skipped instead."
           (let ((after (uiop:read-file-string path)))
             (ok (search "  :new)" after))
             (ok (= (length after) (length content)))))))))
+
+(deftest lisp-patch-form-by-form-start
+  (testing "FORM-START reaches a top-level form with no name"
+    (let ((text (format nil "(defun named () 1)~%~%(dolist (x '(1 2))~%  (print x))~%")))
+      (with-temp-file "tests/tmp/patch-form-start.lisp" text
+        (lambda (path)
+          (lisp-patch-form :file-path path
+                           :form-start (search "(dolist" text)
+                           :old-text "(print x)"
+                           :new-text "(princ x)")
+          (let ((updated (fs-read-file path)))
+            (ok (search "(princ x)" updated))
+            (ok (search "(defun named () 1)" updated)))))))
+  (testing "an offset where no top-level form begins is refused, nothing written"
+    (let ((text (format nil "(defun named () 1)~%")))
+      (with-temp-file "tests/tmp/patch-form-start-miss.lisp" text
+        (lambda (path)
+          (ok (handler-case
+                  (progn (lisp-patch-form :file-path path :form-start 3
+                                          :old-text "1" :new-text "2")
+                         nil)
+                (error () t)))
+          (ok (string= text (fs-read-file path)))))))
+  (testing "a call naming no target at all is refused"
+    (ok (handler-case
+            (progn (lisp-patch-form :file-path (project-path "tests/tmp/none.lisp")
+                                    :old-text "a" :new-text "b")
+                   nil)
+          (error () t)))))

@@ -349,7 +349,7 @@ dry-run summary show the edited form instead of the whole updated file.
 
 (defun lisp-edit-form
        (&key file-path form-type form-name operation content dry-run
-        (normalize-blank-lines t) readtable)
+        (normalize-blank-lines t) readtable form-start)
   "Structured edit of a top-level Lisp form.
 FILE-PATH may be absolute or relative to the project root. FORM-TYPE,
 FORM-NAME, and OPERATION are always required. CONTENT is required for
@@ -366,11 +366,17 @@ together) and, in a dry run, under \"unresolved_symbols\".
 When DRY-RUN is true, no changes are written; a preview hash-table is returned.
 
 READTABLE, if provided, specifies a named-readtable designator (e.g., :interpol-syntax)
-to use for parsing both the file and the new content."
+to use for parsing both the file and the new content.
+
+FORM-START, an integer, targets the top-level form beginning at that
+character offset INSTEAD of FORM-TYPE / FORM-NAME — the way to reach a
+form with no name (see %FIND-TARGET-AT)."
   (unless
-      (and (stringp file-path) (stringp form-type) (stringp form-name)
-           (stringp operation))
-    (error "file_path, form_type, form_name, and operation must be strings"))
+      (and (stringp file-path) (stringp operation)
+           (or (integerp form-start)
+               (and (stringp form-type) (stringp form-name))))
+    (error "file_path and operation must be strings, with form_type and ~
+            form_name strings or form_start an integer"))
   (unless (member dry-run '(t nil)) (error "dry-run must be boolean"))
   (unless (member normalize-blank-lines '(t nil))
     (error "normalize-blank-lines must be boolean"))
@@ -386,7 +392,7 @@ to use for parsing both the file and the new content."
     (multiple-value-bind
         (abs rel original nodes target target-snippet _ file-package-name
          unresolved-in-file)
-        (%locate-target-form file-path form-type form-name readtable)
+        (%locate-target-form file-path form-type form-name readtable form-start)
       (declare (ignore nodes _))
       (flet ((merge-unresolved (more)
                (remove-duplicates (append unresolved-in-file more)

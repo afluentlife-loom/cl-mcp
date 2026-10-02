@@ -1184,3 +1184,17 @@ Used to prove that a dry-run summary does not grow with the size of the file."
           (let ((after (uiop:read-file-string path)))
             (ok (search "  :new)" after))
             (ok (search tail after) "the whole tail survives, byte for byte")))))))
+
+(deftest lisp-edit-form-by-form-start
+  (testing "FORM-START replaces a top-level form with no name"
+    (let ((text (format nil "(defun named () 1)~%~%(let ((x 1))~%  (print x))~%")))
+      (with-temp-file "tests/tmp/edit-form-start.lisp" text
+        (lambda (path)
+          (lisp-edit-form :file-path path
+                          :form-start (search "(let" text)
+                          :operation "replace"
+                          :content "(let ((x 2))
+  (print x))")
+          (let ((updated (fs-read-file path)))
+            (ok (search "(x 2)" updated))
+            (ok (search "(defun named () 1)" updated))))))))
