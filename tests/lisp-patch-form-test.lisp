@@ -424,9 +424,9 @@ running as root), THUNK is skipped instead."
 
 (deftest lisp-patch-form-auto-detected-readtable
   (testing "patch validates modified form using auto-detected readtable from in-readtable"
-    (handler-case
+    (if (not (%try-load :cl-interpol))
+        (skip "cl-interpol not available")
         (progn
-          (unless (%try-load :cl-interpol) (error "not available"))
           (with-temp-file "tests/tmp/patch-auto-readtable.lisp"
               (format nil
                       "(in-package :cl-user)~%(named-readtables:in-readtable :interpol-syntax)~%~%(defun greet (name)~%  #?\"Hello, ${name}!\")~%")
@@ -439,9 +439,7 @@ running as root), THUNK is skipped instead."
                                :new-text "Hi")
               (let ((updated (fs-read-file path)))
                 (ok (search "#?\"Hi, ${name}!\"" updated))
-                (ok (null (search "Hello" updated)))))))
-      (error ()
-        (skip "cl-interpol not available")))))
+                (ok (null (search "Hello" updated))))))))))
 
 ;;; ============================================================
 ;;; Schema validation

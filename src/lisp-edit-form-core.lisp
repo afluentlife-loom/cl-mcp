@@ -349,7 +349,8 @@ Returns nine values:
                (list (parse-top-level-forms original
                                            :readtable readtable
                                            :source-path abs)
-                     (extract-in-package-name-from-text original))))
+                     (extract-in-package-name-from-text
+                      original :readtable (%resolve-named-readtable readtable)))))
           (destructuring-bind (nodes file-package-name) parsed
             (let ((target (if form-start
                               (%find-target-at nodes form-start)

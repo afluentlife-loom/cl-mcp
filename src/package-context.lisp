@@ -132,19 +132,31 @@ job -- no name list can enumerate every vendoring convention.")
                results)))
     (walk (ensure-directory-pathname root))))
 
-(defun %read-header-forms-from-text (text)
-  "Read package-related header forms from TEXT using the CL reader.
+(defun %read-header-forms-from-text (text &key readtable)
+  "Read package-related header forms from TEXT using the CL reader, with
+READTABLE (a readtable object) when given, else the standard one.
 Stops after the first non-header top-level form once package header forms
-have begun, to avoid descending into the rest of the file."
+have begun, to avoid descending into the rest of the file.
+
+That first body form is read only to learn the header has ended, so a form
+that does not READ there ends the header the same way: body syntax the scan
+cannot read — a reader macro from a readtable it was not given, `#?' or
+`#R\"...\"' — never costs the header already read (2026-10-04: an explicit
+:interpol-syntax edit failed on the `#?' after the IN-PACKAGE, and one such
+form dropped every package spec of its file). An error before any header
+form still propagates."
   (call-with-lenient-packages
    (lambda ()
      (let ((*read-eval* nil)
            ;; `#.' reads as data — see INERT-READ-EVAL-READTABLE.
-           (*readtable* (inert-read-eval-readtable)))
+           (*readtable* (inert-read-eval-readtable readtable)))
        (with-input-from-string (stream text)
          (let ((forms nil)
                (saw-header nil))
-           (loop for form = (read stream nil :eof)
+           (loop for form = (if saw-header
+                                (handler-case (read stream nil :eof)
+                                  (error () :eof))
+                                (read stream nil :eof))
                  until (eq form :eof)
                  do (cond
                       ((%header-form-p form)
@@ -162,9 +174,12 @@ have begun, to avoid descending into the rest of the file."
                   (consp (cdr form)))
           do (return (%designator-name (second form)))))
 
-(defun extract-in-package-name-from-text (text)
-  "Return the package named by the first IN-PACKAGE form in TEXT, or NIL."
-  (%extract-in-package-name-from-forms (%read-header-forms-from-text text)))
+(defun extract-in-package-name-from-text (text &key readtable)
+  "Return the package named by the first IN-PACKAGE form in TEXT, or NIL.
+READTABLE, a readtable object, reads the header when the file's syntax
+needs one (see %READ-HEADER-FORMS-FROM-TEXT)."
+  (%extract-in-package-name-from-forms
+   (%read-header-forms-from-text text :readtable readtable)))
 
 (defun %normalize-local-nickname-entries (entries)
   "Convert local nickname ENTRIES into an alist of (nickname . package-name)."
@@ -355,12 +370,14 @@ project source and bind *PACKAGE* to the synthesized package while THUNK runs."
                        thunk))
                  (%cleanup-synthesized-package-context context)))))))))
 
-(defun call-with-file-package-context (file-path thunk &key text)
-  "Call THUNK with the package context implied by FILE-PATH's IN-PACKAGE form."
+(defun call-with-file-package-context (file-path thunk &key text readtable)
+  "Call THUNK with the package context implied by FILE-PATH's IN-PACKAGE form.
+READTABLE, a readtable object, reads the header (see
+EXTRACT-IN-PACKAGE-NAME-FROM-TEXT)."
   (let ((file-text
           (or text
               (fs-read-whole-file file-path))))
     (call-with-package-context
-     (extract-in-package-name-from-text file-text)
+     (extract-in-package-name-from-text file-text :readtable readtable)
      thunk
      :source-path file-path)))

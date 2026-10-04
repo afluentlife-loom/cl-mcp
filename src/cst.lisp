@@ -348,6 +348,7 @@ package-local-nicknames activate for subsequent forms."
         source-path
         (lambda ()
           (%parse-top-level-forms-core text readtable))
-        :text text))
+        :text text
+        :readtable (and readtable (named-readtable-in-image readtable))))
       (t
        (%parse-top-level-forms-core text readtable)))))

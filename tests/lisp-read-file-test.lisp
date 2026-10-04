@@ -371,9 +371,9 @@ returned list is the assertion the signature-layout tests below are built on."
 
 (deftest lisp-read-file-with-custom-readtable
   (testing "readtable parameter enables reading files with custom reader macros"
-    (handler-case
+    (if (not (%try-load :cl-interpol))
+        (skip "cl-interpol not available")
         (progn
-          (unless (%try-load :cl-interpol) (error "not available"))
           (with-temp-lisp-file "tests/tmp/lisp-read-interpol.lisp"
               (format nil "(in-package :cl-user)~%~%(defun greet (name)~%  #?\"Hello, ${name}!\")~%")
             (lambda (path)
@@ -381,9 +381,7 @@ returned list is the assertion the signature-layout tests below are built on."
               (let* ((result (lisp-read-file path :readtable :interpol-syntax))
                      (content (gethash "content" result)))
                 (ok (stringp content))
-                (ok (search "(defun greet" content))))))
-      (error ()
-        (skip "cl-interpol not available")))))
+                (ok (search "(defun greet" content)))))))))
 
 (deftest lisp-read-file-ignores-blank-readtable
   (testing "blank readtable arguments are treated as omitted"
@@ -405,9 +403,9 @@ returned list is the assertion the signature-layout tests below are built on."
 
 (deftest lisp-read-file-auto-detects-in-readtable
   (testing "in-readtable form triggers automatic readtable switching"
-    (handler-case
+    (if (not (%try-load :cl-interpol))
+        (skip "cl-interpol not available")
         (progn
-          (unless (%try-load :cl-interpol) (error "not available"))
           (with-temp-lisp-file "tests/tmp/lisp-read-in-readtable.lisp"
               (format nil "(in-package :cl-user)~%(named-readtables:in-readtable :interpol-syntax)~%~%(defun greet (name)~%  #?\"Hello, ${name}!\")~%")
             (lambda (path)
@@ -415,9 +413,7 @@ returned list is the assertion the signature-layout tests below are built on."
               (let* ((result (lisp-read-file path))
                      (content (gethash "content" result)))
                 (ok (stringp content))
-                (ok (search "(defun greet" content))))))
-      (error ()
-        (skip "cl-interpol not available")))))
+                (ok (search "(defun greet" content)))))))))
 
 (deftest lisp-read-file-read-eval-disabled-in-package-context-scan
   (testing "package-context header scan reads #. forms as data and does not execute them"
@@ -546,10 +542,9 @@ returned list is the assertion the signature-layout tests below are built on."
 
 (deftest lisp-read-file-with-package-qualified-readtable
   (testing "readtable parameter supports package-qualified symbol names (pkg:sym format)"
-    (handler-case
+    (if (not (and (%try-load :named-readtables) (%try-load :cl-interpol)))
+        (skip "named-readtables or cl-interpol not available")
         (progn
-          (unless (%try-load :named-readtables) (error "not available"))
-          (unless (%try-load :cl-interpol) (error "not available"))
           ;; Create a test package with a named readtable at runtime
           ;; to avoid parse-time errors with non-existent package-qualified symbols
           (let ((test-pkg-name "CL-MCP-TEST-PKG-QUALIFIED-RT"))
@@ -574,7 +569,8 @@ returned list is the assertion the signature-layout tests below are built on."
                      (lambda (path)
                        ;; Use the package-qualified format: "pkg:sym"
                        (let* ((rt-string (format nil "~A:~A" test-pkg-name "TEST-INTERPOL"))
-                              (result (lisp-read-file path :readtable rt-string))
+                              (result (lisp-read-file path :readtable
+                                              (cl-mcp/src/lisp-edit-form-core:%parse-readtable-designator rt-string)))
                               (content (gethash "content" result)))
                          (ok (stringp content))
                          (ok (search "(defun greet-pkg" content))))))
@@ -584,9 +580,7 @@ returned list is the assertion the signature-layout tests below are built on."
                      (unregister-fn (find-symbol "UNREGISTER-READTABLE" :named-readtables)))
                  (when (and rt-sym unregister-fn)
                    (funcall unregister-fn rt-sym))))
-              (ignore-errors (delete-package test-pkg-name)))))
-      (error (e)
-        (skip (format nil "Test dependencies not available: ~A" e))))))
+              (ignore-errors (delete-package test-pkg-name))))))))
 
 (deftest lisp-read-file-raw-truncated-footer
   (testing "appends footer when content is truncated in raw mode"

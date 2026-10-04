@@ -69,6 +69,43 @@
   (ok (null (extract-in-package-name-from-text
              ";; just a comment~%(defun foo () 1)")))))
 
+(defun %hash-question-readtable ()
+  "The standard readtable plus #?\"text\" => (:Q \"text\"): syntax the
+standard reader refuses (no dispatch function for #\?)."
+  (let ((rt (copy-readtable nil)))
+    (set-dispatch-macro-character
+     #\# #\? (lambda (stream sub-char arg)
+               (declare (ignore sub-char arg))
+               (list :q (read stream t nil t)))
+     rt)
+    rt))
+
+(deftest extract-in-package-past-unreadable-body
+ (testing "body syntax the scan cannot read ends the header; it does not lose it"
+  (ok (string-equal "MY-APP"
+                    (extract-in-package-name-from-text
+                     (format nil "(in-package :my-app)~%(defun f () #?\"x\")"))))))
+
+(deftest extract-in-package-header-with-a-readtable
+ (testing "a header needing a readtable reads with the one given"
+  (let ((text (format nil "(defpackage :rt-hdr (:documentation #?\"d\"))~%(in-package :rt-hdr)")))
+    (ok (string-equal "RT-HDR"
+                      (extract-in-package-name-from-text
+                       text :readtable (%hash-question-readtable))))
+    (ok (handler-case (progn (extract-in-package-name-from-text text) nil)
+          (error () t))
+        "without it, an error before any header still propagates"))))
+
+(deftest discover-package-spec-past-unreadable-body
+ (testing "a defpackage file whose body does not read keeps its spec"
+  (call-with-temp-project
+   (lambda (root)
+     (write-source root "src/refs.lisp"
+                   "(defpackage #:my-refs-pkg (:use #:cl))
+(in-package #:my-refs-pkg)
+(defparameter *r* #R\"tools/t.lisp#function(p::f)\")")
+     (ok (discover-package-spec "MY-REFS-PKG"))))))
+
 (deftest discover-package-spec-finds-defpackage
  (testing "discover-package-spec walks project sources to find a defpackage"
   (call-with-temp-project

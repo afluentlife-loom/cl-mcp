@@ -605,9 +605,9 @@ Used to prove that a dry-run summary does not grow with the size of the file."
 
 (deftest lisp-edit-form-with-custom-readtable
   (testing "readtable parameter enables editing files with custom reader macros"
-    (handler-case
+    (if (not (%try-load :cl-interpol))
+        (skip "cl-interpol not available")
         (progn
-          (unless (%try-load :cl-interpol) (error "not available"))
           (with-temp-file "tests/tmp/edit-form-interpol.lisp"
               (format nil "(in-package :cl-user)~%~%(defun greet (name)~%  #?\"Hello, ${name}!\")~%")
             (lambda (path)
@@ -620,9 +620,7 @@ Used to prove that a dry-run summary does not grow with the size of the file."
                               :readtable :interpol-syntax)
               (let ((updated (fs-read-file path)))
                 (ok (search "#?\"Hi, ${name}!\"" updated))
-                (ok (null (search "#?\"Hello, ${name}!\"" updated)))))))
-      (error ()
-        (skip "cl-interpol not available")))))
+                (ok (null (search "#?\"Hello, ${name}!\"" updated))))))))))
 
 (deftest lisp-edit-form-ignores-blank-readtable
   (testing "blank readtable arguments are treated as omitted"
@@ -644,9 +642,9 @@ Used to prove that a dry-run summary does not grow with the size of the file."
 
 (deftest lisp-edit-form-auto-detects-in-readtable
   (testing "in-readtable form triggers automatic readtable switching"
-    (handler-case
+    (if (not (%try-load :cl-interpol))
+        (skip "cl-interpol not available")
         (progn
-          (unless (%try-load :cl-interpol) (error "not available"))
           (with-temp-file "tests/tmp/edit-form-in-readtable.lisp"
               (format nil "(in-package :cl-user)~%(named-readtables:in-readtable :interpol-syntax)~%~%(defun greet (name)~%  #?\"Hello, ${name}!\")~%")
             (lambda (path)
@@ -658,9 +656,7 @@ Used to prove that a dry-run summary does not grow with the size of the file."
                               :content (format nil "(defun greet (name)~%  #?\"Hi, ${name}!\")"))
               (let ((updated (fs-read-file path)))
                 (ok (search "#?\"Hi, ${name}!\"" updated))
-                (ok (null (search "#?\"Hello, ${name}!\"" updated)))))))
-      (error ()
-        (skip "cl-interpol not available")))))
+                (ok (null (search "#?\"Hello, ${name}!\"" updated))))))))))
 
 (deftest lisp-edit-form-defmethod-qualifier-only
   (testing "defmethod matches by name + qualifier without lambda-list"
@@ -738,10 +734,9 @@ Used to prove that a dry-run summary does not grow with the size of the file."
 
 (deftest lisp-edit-form-with-package-qualified-readtable
   (testing "readtable parameter supports package-qualified symbol names (pkg:sym format)"
-    (handler-case
+    (if (not (and (%try-load :named-readtables) (%try-load :cl-interpol)))
+        (skip "named-readtables or cl-interpol not available")
         (progn
-          (unless (%try-load :named-readtables) (error "not available"))
-          (unless (%try-load :cl-interpol) (error "not available"))
           ;; Create a test package with a named readtable at runtime
           (let ((test-pkg-name "CL-MCP-EDIT-TEST-PKG-QUALIFIED-RT"))
             (when (find-package test-pkg-name)
@@ -770,7 +765,7 @@ Used to prove that a dry-run summary does not grow with the size of the file."
                                          :form-name "greet-pkg"
                                          :operation "replace"
                                          :content (format nil "(defun greet-pkg (name)~%  #?\"Hi, ${name}!\")")
-                                         :readtable rt-string)
+                                         :readtable (cl-mcp/src/lisp-edit-form-core:%parse-readtable-designator rt-string))
                          (let ((updated (fs-read-file path)))
                            (ok (search "#?\"Hi, ${name}!\"" updated))
                            (ok (null (search "#?\"Hello, ${name}!\"" updated))))))))
@@ -780,9 +775,7 @@ Used to prove that a dry-run summary does not grow with the size of the file."
                      (unregister-fn (find-symbol "UNREGISTER-READTABLE" :named-readtables)))
                  (when (and rt-sym unregister-fn)
                    (funcall unregister-fn rt-sym))))
-              (ignore-errors (delete-package test-pkg-name)))))
-      (error (e)
-        (skip (format nil "Test dependencies not available: ~A" e))))))
+              (ignore-errors (delete-package test-pkg-name))))))))
 
 (deftest lisp-edit-form-multiple-matches-error
   (testing "multiple matches without index signals descriptive error"
