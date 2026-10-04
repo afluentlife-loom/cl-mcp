@@ -33,6 +33,8 @@
                 #:%resolve-named-readtable
                 #:%parse-readtable-designator
                 #:%detect-readtable-before-node
+                #:%target-readtable
+                #:%call-reading-with-target-readtable
                 #:%whitespace-char-p
                 #:%locate-target-form)
   (:documentation "Scoped text replacement within a matched top-level Lisp form.")
@@ -148,6 +150,13 @@ ahead of the image, or a typo — never stops the patch; it is REPORTED: as
 the third value (a list of \"PACKAGE:SYMBOL\" names, file and new text
 together) and, in a dry run, under \"unresolved_symbols\".
 
+The patched form is read with the file's readtable: the last IN-READTABLE
+before the form, unless READTABLE names one. When the image defines no
+readtable of that name the patch is still read, with the standard
+readtable; if that reads, the patch goes ahead and the designator is
+REPORTED as the fourth value (\"missing_readtable\" in a dry run), and if it
+does not, READTABLE-NOT-IN-IMAGE is signalled, naming it.
+
 When DRY-RUN is true, no changes are written; a preview hash-table is returned.
 
 READTABLE, if provided, specifies a named-readtable designator (e.g., :interpol-syntax)
@@ -171,41 +180,44 @@ form with no name (see %FIND-TARGET-AT)."
     (declare (ignore _))
     (multiple-value-bind (updated modified-form)
         (%apply-patch-operation original target old-text new-text)
-      (let* ((would-change (not (string= original updated)))
-             (unresolved-in-patch
-               (when would-change
-                 (nth-value 1
-                            (%validate-form-parseable
-                             modified-form
-                             (or readtable
-                                 (%detect-readtable-before-node nodes target))
-                             file-package-name
-                             abs))))
-             (unresolved (remove-duplicates
-                          (append unresolved-in-file unresolved-in-patch)
-                          :test #'string= :from-end t)))
-        (log-event :debug "lisp.patch.form"
-                   "path" (namestring abs)
-                   "form_type" form-type
-                   "form_name" form-name
-                   "dry_run" dry-run
-                   "would_change" would-change
-                   "unresolved" (length unresolved))
-        (cond
-          (dry-run
-           (let ((result (make-hash-table :test #'equal)))
-             (setf (gethash "would_change" result) would-change
-                   (gethash "original" result) target-snippet
-                   (gethash "preview" result) modified-form
-                   (gethash "file_path" result) (namestring abs)
-                   (gethash "operation" result) "patch"
-                   (gethash "unresolved_symbols" result) unresolved)
-             result))
-          (would-change
-           (fs-write-file rel updated)
-           (values updated t unresolved))
-          (t
-           (values updated nil unresolved)))))))
+      (multiple-value-bind (designator missing-p)
+          (%target-readtable nodes target readtable)
+        (let* ((would-change (not (string= original updated)))
+               (missing-readtable (and missing-p designator))
+               (unresolved-in-patch
+                 (when would-change
+                   (nth-value 1
+                              (%call-reading-with-target-readtable
+                               designator missing-p
+                               (lambda ()
+                                 (%validate-form-parseable
+                                  modified-form designator file-package-name abs))))))
+               (unresolved (remove-duplicates
+                            (append unresolved-in-file unresolved-in-patch)
+                            :test #'string= :from-end t)))
+          (log-event :debug "lisp.patch.form"
+                     "path" (namestring abs)
+                     "form_type" form-type
+                     "form_name" form-name
+                     "dry_run" dry-run
+                     "would_change" would-change
+                     "unresolved" (length unresolved))
+          (cond
+            (dry-run
+             (let ((result (make-hash-table :test #'equal)))
+               (setf (gethash "would_change" result) would-change
+                     (gethash "original" result) target-snippet
+                     (gethash "preview" result) modified-form
+                     (gethash "file_path" result) (namestring abs)
+                     (gethash "operation" result) "patch"
+                     (gethash "unresolved_symbols" result) unresolved
+                     (gethash "missing_readtable" result) missing-readtable)
+               result))
+            (would-change
+             (fs-write-file rel updated)
+             (values updated t unresolved missing-readtable))
+            (t
+             (values updated nil unresolved missing-readtable))))))))
 
 (define-tool "lisp-patch-form"
   :description "Scoped text replacement within a matched top-level Lisp form.

@@ -28,7 +28,11 @@
            #:%in-package-form-p
            ;; `#.' read as data: the marker and the readtable that does it.
            #:read-time-eval
-           #:inert-read-eval-readtable))
+           #:inert-read-eval-readtable
+           ;; A file's IN-READTABLE names a readtable this image lacks.
+           #:readtable-not-in-image
+           #:readtable-not-in-image-designator
+           #:named-readtable-in-image))
 
 (in-package #:cl-mcp/src/cst)
 
@@ -81,16 +85,40 @@
                       ((symbolp designator) (symbol-name designator))
                       (t nil)))))))
 
-(defun %try-switch-readtable (designator)
-  "Try to get the named readtable for DESIGNATOR.
-Returns the readtable if found, NIL if named-readtables is not loaded
-or the readtable is not found."
+(defun named-readtable-in-image (designator)
+  "The named readtable DESIGNATOR names in this image, or NIL when
+named-readtables is not loaded or no readtable of that name is defined —
+the system that defines it is not loaded."
   (let ((pkg (or (find-package :named-readtables)
                  (find-package :editor-hints.named-readtables))))
     (when pkg
       (let ((find-fn (find-symbol "FIND-READTABLE" pkg)))
         (when (and find-fn (fboundp find-fn))
           (funcall find-fn designator))))))
+
+(define-condition readtable-not-in-image (error)
+  ((designator :initarg :designator :reader readtable-not-in-image-designator)
+   (cause :initarg :cause :initform nil :reader readtable-not-in-image-cause))
+  (:documentation "A file declares (IN-READTABLE DESIGNATOR), or a caller
+named DESIGNATOR, and this image defines no readtable of that name, so text
+written in it could not be read. Signalled instead of the bare reader error
+that reading with the standard readtable produces, which names a reader
+macro and not the cause: the system defining the readtable is not loaded.")
+  (:report (lambda (c s)
+             (format s "Readtable ~S is not defined in this image (the system that ~
+defines it is not loaded), so this text was read with the standard readtable~
+~@[ and did not read: ~A~]. Load the system that defines ~S and retry; ~
+nothing was written."
+                     (readtable-not-in-image-designator c)
+                     (let ((cause (readtable-not-in-image-cause c)))
+                       ;; one line: reader errors wrap and indent their stream
+                       (and cause (format nil "~{~A~^ ~}"
+                                          (remove "" (uiop:split-string
+                                                      (substitute #\Space #\Newline
+                                                                  (princ-to-string cause))
+                                                      :separator " ")
+                                                  :test #'string=))))
+                     (readtable-not-in-image-designator c)))))
 
 (defun %read-remaining-with-cl-reader (stream nodes custom-readtable)
   "Read remaining forms from STREAM using standard CL reader with CUSTOM-READTABLE.
@@ -224,26 +252,47 @@ inert: EVALUATE-EXPRESSION answers (READ-TIME-EVAL expression)."))
   (list 'read-time-eval expression))
 
 (defun %parse-top-level-forms-core (text readtable)
-  "Parse TEXT into CST nodes assuming *PACKAGE* and *LINE-TABLE* are already bound."
+  "Parse TEXT into CST nodes assuming *PACKAGE* and *LINE-TABLE* are already bound.
+An IN-READTABLE naming a readtable this image lacks does not stop the parse:
+the rest is read with the standard readtable, recovering from what that
+cannot read (form boundaries stay exact; the values of forms that needed the
+missing syntax do not). Only when recovery is impossible is
+READTABLE-NOT-IN-IMAGE signalled, naming the readtable rather than the
+reader macro it would have defined. The editors read the EDITED text with
+the file's readtable separately (%TARGET-READTABLE), and refuse there."
   (if readtable
-      (let ((custom-rt (%try-switch-readtable readtable)))
+      (let ((custom-rt (named-readtable-in-image readtable)))
         (if custom-rt
             (call-with-lenient-packages
              (lambda ()
                (with-input-from-string (stream text)
                  (%read-remaining-with-cl-reader stream nil custom-rt))))
-            (error "Readtable ~S not found." readtable)))
+            (error 'readtable-not-in-image :designator readtable)))
       (let ((*readtable* (copy-readtable))
             ;; T so eclector reads a `#.' expression instead of refusing
             ;; the file; CST-CLIENT's EVALUATE-EXPRESSION then keeps it
             ;; as data. Nothing is evaluated on this path.
             (*read-eval* t)
             (nodes '())
+            (missing nil)               ; a declared readtable the image lacks
             (client (make-instance 'cst-client)))
         (with-input-from-string (stream text)
           (handler-case
               (call-with-lenient-packages
                (lambda ()
+                 (handler-bind
+                     ;; After an IN-READTABLE the image lacks, read on with
+                     ;; the standard readtable and RECOVER from what it
+                     ;; cannot read: eclector keeps every top-level form's
+                     ;; boundaries, which is all locating a form needs (the
+                     ;; recovered form's VALUE is not what the file means).
+                     ((reader-error
+                        (lambda (e)
+                          (declare (ignore e))
+                          (let ((recover (and missing
+                                              (find-restart 'eclector.reader:recover))))
+                            (when recover
+                              (invoke-restart recover))))))
                  (loop
                    (multiple-value-bind (result orphan-results)
                        (eclector.parse-result:read client stream nil :eof)
@@ -263,12 +312,16 @@ inert: EVALUATE-EXPRESSION answers (READ-TIME-EVAL expression)."))
                        (let ((designator
                                (%in-readtable-form-p (cst-node-value result))))
                          (when designator
-                           (let ((custom-rt (%try-switch-readtable designator)))
+                           (let ((custom-rt (named-readtable-in-image designator)))
+                             (unless custom-rt
+                               (setf missing designator))
                              (when custom-rt
                                (return
                                  (%read-remaining-with-cl-reader
-                                  stream nodes custom-rt)))))))))))
+                                  stream nodes custom-rt))))))))))))
             (reader-error (e)
+              (when missing
+                (error 'readtable-not-in-image :designator missing :cause e))
               (error
                "Reader error: ~A~%~%If this file uses custom reader macros (e.g., cl-interpol's #?), ~
 specify the 'readtable' parameter with the named-readtable designator ~

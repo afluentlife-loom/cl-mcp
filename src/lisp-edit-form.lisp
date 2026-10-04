@@ -33,6 +33,8 @@
   (:import-from #:cl-mcp/src/lisp-edit-form-core
                 #:%resolve-named-readtable
                 #:%parse-readtable-designator
+                #:%target-readtable
+                #:%call-reading-with-target-readtable
                 #:%whitespace-char-p
                 #:%locate-target-form)
   (:documentation "Structure-aware editing of top-level Lisp forms.")
@@ -366,7 +368,12 @@ together) and, in a dry run, under \"unresolved_symbols\".
 When DRY-RUN is true, no changes are written; a preview hash-table is returned.
 
 READTABLE, if provided, specifies a named-readtable designator (e.g., :interpol-syntax)
-to use for parsing both the file and the new content.
+to use for parsing both the file and the new content. Absent that, CONTENT is
+read with the file's readtable: the last IN-READTABLE before the target form.
+When the image defines no readtable of that name, CONTENT is read with the
+standard readtable; if that reads, the edit goes ahead and the designator is
+REPORTED as the fifth value (\"missing_readtable\" in a dry run), and if it does
+not, READTABLE-NOT-IN-IMAGE is signalled, naming it.
 
 FORM-START, an integer, targets the top-level form beginning at that
 character offset INSTEAD of FORM-TYPE / FORM-NAME — the way to reach a
@@ -393,52 +400,24 @@ form with no name (see %FIND-TARGET-AT)."
         (abs rel original nodes target target-snippet _ file-package-name
          unresolved-in-file)
         (%locate-target-form file-path form-type form-name readtable form-start)
-      (declare (ignore nodes _))
-      (flet ((merge-unresolved (more)
-               (remove-duplicates (append unresolved-in-file more)
-                                  :test #'string= :from-end t)))
-        (if (eq op-key :delete)
-            ;; Delete path: no content validation needed
-            (let* ((updated
-                     (%apply-operation original target op-key nil
-                                       normalize-blank-lines))
-                   (would-change (not (string= original updated)))
-                   (unresolved (merge-unresolved nil)))
-              (log-event :debug "lisp.edit.form" "path" (namestring abs)
-                         "operation" op-normalized "form_type" form-type
-                         "form_name" form-name "normalize_blank_lines"
-                         normalize-blank-lines "bytes" (length updated) "dry_run"
-                         dry-run "would_change" would-change)
-              (cond
-                (dry-run
-                 (let ((result (make-hash-table :test #'equal)))
-                   (setf (gethash "would_change" result) would-change
-                         (gethash "original" result) target-snippet
-                         (gethash "preview" result) updated
-                         (gethash "preview_form" result)
-                         (%preview-form-text op-key nil normalize-blank-lines)
-                         (gethash "file_path" result) (namestring abs)
-                         (gethash "operation" result) op-normalized
-                         (gethash "unresolved_symbols" result) unresolved)
-                   result))
-                (would-change (fs-write-file rel updated)
-                 (values updated nil t unresolved))
-                (t (values updated nil nil unresolved))))
-            ;; Non-delete path: validate and repair content
-            (multiple-value-bind (validated-content parinfer-warning unresolved-in-content)
-                (%validate-and-repair-content content readtable file-package-name
-                                              abs)
+      (declare (ignore _))
+      (multiple-value-bind (designator missing-p)
+          (%target-readtable nodes target readtable)
+        (flet ((merge-unresolved (more)
+                 (remove-duplicates (append unresolved-in-file more)
+                                    :test #'string= :from-end t)))
+          (if (eq op-key :delete)
+              ;; Delete path: no content validation needed
               (let* ((updated
-                       (%apply-operation original target op-key validated-content
+                       (%apply-operation original target op-key nil
                                          normalize-blank-lines))
                      (would-change (not (string= original updated)))
-                     (unresolved (merge-unresolved unresolved-in-content)))
+                     (unresolved (merge-unresolved nil)))
                 (log-event :debug "lisp.edit.form" "path" (namestring abs)
                            "operation" op-normalized "form_type" form-type
                            "form_name" form-name "normalize_blank_lines"
                            normalize-blank-lines "bytes" (length updated) "dry_run"
-                           dry-run "would_change" would-change
-                           "unresolved" (length unresolved))
+                           dry-run "would_change" would-change)
                 (cond
                   (dry-run
                    (let ((result (make-hash-table :test #'equal)))
@@ -446,17 +425,54 @@ form with no name (see %FIND-TARGET-AT)."
                            (gethash "original" result) target-snippet
                            (gethash "preview" result) updated
                            (gethash "preview_form" result)
-                           (%preview-form-text op-key validated-content
-                                               normalize-blank-lines)
+                           (%preview-form-text op-key nil normalize-blank-lines)
                            (gethash "file_path" result) (namestring abs)
                            (gethash "operation" result) op-normalized
-                           (gethash "unresolved_symbols" result) unresolved)
-                     (when parinfer-warning
-                       (setf (gethash "parinfer_warning" result) parinfer-warning))
+                           (gethash "unresolved_symbols" result) unresolved
+                           (gethash "missing_readtable" result) (and missing-p designator))
                      result))
                   (would-change (fs-write-file rel updated)
-                   (values updated parinfer-warning t unresolved))
-                  (t (values updated parinfer-warning nil unresolved))))))))))
+                   (values updated nil t unresolved (and missing-p designator)))
+                  (t (values updated nil nil unresolved (and missing-p designator)))))
+              ;; Non-delete path: validate and repair content
+              (multiple-value-bind (validated-content parinfer-warning unresolved-in-content)
+                  (%call-reading-with-target-readtable
+                   designator missing-p
+                   (lambda ()
+                     (%validate-and-repair-content content designator file-package-name
+                                                   abs)))
+                (let* ((updated
+                         (%apply-operation original target op-key validated-content
+                                           normalize-blank-lines))
+                       (would-change (not (string= original updated)))
+                       (unresolved (merge-unresolved unresolved-in-content)))
+                  (log-event :debug "lisp.edit.form" "path" (namestring abs)
+                             "operation" op-normalized "form_type" form-type
+                             "form_name" form-name "normalize_blank_lines"
+                             normalize-blank-lines "bytes" (length updated) "dry_run"
+                             dry-run "would_change" would-change
+                             "unresolved" (length unresolved))
+                  (cond
+                    (dry-run
+                     (let ((result (make-hash-table :test #'equal)))
+                       (setf (gethash "would_change" result) would-change
+                             (gethash "original" result) target-snippet
+                             (gethash "preview" result) updated
+                             (gethash "preview_form" result)
+                             (%preview-form-text op-key validated-content
+                                                 normalize-blank-lines)
+                             (gethash "file_path" result) (namestring abs)
+                             (gethash "operation" result) op-normalized
+                             (gethash "unresolved_symbols" result) unresolved
+                             (gethash "missing_readtable" result) (and missing-p designator))
+                       (when parinfer-warning
+                         (setf (gethash "parinfer_warning" result) parinfer-warning))
+                       result))
+                    (would-change (fs-write-file rel updated)
+                     (values updated parinfer-warning t unresolved
+                             (and missing-p designator)))
+                    (t (values updated parinfer-warning nil unresolved
+                               (and missing-p designator))))))))))))
 
 (define-tool "lisp-edit-form"
   :description "Structure-aware edit of a top-level Lisp form using Eclector CST parsing.

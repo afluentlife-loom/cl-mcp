@@ -15,7 +15,9 @@
   (:import-from #:cl-ppcre
                 #:scan-to-strings)
   (:import-from #:cl-mcp/src/cst
-                #:parse-top-level-forms)
+                #:parse-top-level-forms
+                #:named-readtable-in-image
+                #:readtable-not-in-image)
   (:import-from #:cl-mcp/src/package-context
                 #:extract-in-package-name-from-text)
   (:import-from #:cl-mcp/src/utils/lenient-read
@@ -39,6 +41,8 @@
            #:%resolve-named-readtable
            #:%parse-readtable-designator
            #:%detect-readtable-before-node
+           #:%target-readtable
+           #:%call-reading-with-target-readtable
            #:%whitespace-char-p
            #:%locate-target-form))
 
@@ -120,16 +124,10 @@ symbols as '#:foo') compare equal to user inputs written without the
       (values resolved rel-namestring))))
 
 (defun %resolve-named-readtable (designator)
-  "Resolve DESIGNATOR to a readtable via named-readtables, or return NIL.
-Looks up the readtable using FIND-READTABLE from the named-readtables or
-editor-hints.named-readtables package."
+  "Resolve DESIGNATOR to a readtable via named-readtables, or return NIL
+(see NAMED-READTABLE-IN-IMAGE)."
   (when designator
-    (let ((pkg (or (find-package :named-readtables)
-                   (find-package :editor-hints.named-readtables))))
-      (when pkg
-        (let ((find-fn (find-symbol "FIND-READTABLE" pkg)))
-          (when (and find-fn (fboundp find-fn))
-            (funcall find-fn designator)))))))
+    (named-readtable-in-image designator)))
 
 (defun %parse-readtable-designator (readtable-string)
   "Parse a readtable string from MCP tool args into a symbol designator.
@@ -296,6 +294,29 @@ before TARGET's start position."
                      (string= (symbol-name (car value)) "IN-READTABLE")
                      (consp (cdr value)))
             (setf result (second value))))))))
+
+(defun %target-readtable (nodes target readtable)
+  "The readtable an edit at TARGET is read with, as two values: the
+designator — READTABLE when the caller named one, else the file's last
+IN-READTABLE before TARGET (as its IN-PACKAGE is found) — and MISSING-P,
+true when the image defines no readtable of that name. The edited text
+(content, or the patched form) must be read with the file's own syntax;
+read with the standard one, a `#R\"...\"' is a radix with no radix."
+  (let ((designator (or readtable (%detect-readtable-before-node nodes target))))
+    (values designator
+            (and designator (null (%resolve-named-readtable designator)) t))))
+
+(defun %call-reading-with-target-readtable (designator missing-p thunk)
+  "Call THUNK, which reads edited text with DESIGNATOR. When MISSING-P —
+the image lacks that readtable, so THUNK read with the standard one — a
+failure is signalled as READTABLE-NOT-IN-IMAGE, naming the readtable and
+carrying the failure, rather than as the bare reader error. A THUNK that
+succeeds anyway is the caller's to REPORT, not refuse."
+  (if missing-p
+      (handler-case (funcall thunk)
+        (error (e)
+          (error 'readtable-not-in-image :designator designator :cause e)))
+      (funcall thunk)))
 
 (defun %locate-target-form (file-path form-type form-name readtable &optional form-start)
   "Shared prologue: resolve paths, read file, parse, find target, extract snippet.
