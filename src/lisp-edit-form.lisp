@@ -38,7 +38,9 @@
                 #:%whitespace-char-p
                 #:%locate-target-form)
   (:documentation "Structure-aware editing of top-level Lisp forms.")
-  (:export #:lisp-edit-form))
+  (:export #:lisp-edit-form
+           #:repair-would-restructure
+           #:repair-would-restructure-lines))
 
 (in-package #:cl-mcp/src/lisp-edit-form)
 
@@ -104,10 +106,112 @@ blank line. For EOF boundary use a single newline."
   "Trim leading/trailing horizontal and vertical whitespace from TEXT."
   (string-trim '(#\Space #\Tab #\Newline #\Return) text))
 
+(defun %skip-delimited (text start close)
+  "Index just past the CLOSE that ends the string or |symbol| whose body
+begins at START in TEXT, honouring backslash escapes; (LENGTH TEXT) when
+it never closes."
+  (let ((n (length text)))
+    (loop with i = start
+          while (< i n)
+          do (let ((c (char text i)))
+               (cond ((char= c #\\) (incf i 2))
+                     ((char= c close) (return (1+ i)))
+                     (t (incf i))))
+          finally (return n))))
+
+(defun %delimiters-balanced-p (text)
+  "True when TEXT's list delimiters balance: every ( closed, no ) without
+its (, counting only those outside strings, |symbols|, ; and #| |#
+comments, and #\\ character names. The question READ's failure must
+answer YES to before parinfer may touch the content: content whose
+delimiters already balance fails to read for some other reason, which
+parinfer cannot fix and can only disguise by moving delimiters
+(2026-10-07)."
+  (let ((n (length text)) (depth 0) (i 0))
+    (loop while (< i n)
+          do (let ((c (char text i))
+                   (next (and (< (1+ i) n) (char text (1+ i)))))
+               (cond ((char= c #\;)
+                      (setf i (or (position #\Newline text :start i) n)))
+                     ((char= c #\") (setf i (%skip-delimited text (1+ i) #\")))
+                     ((char= c #\|) (setf i (%skip-delimited text (1+ i) #\|)))
+                     ;; #\( and #\) name characters; the char after #\ is never a delimiter
+                     ((and (char= c #\#) (eql next #\\)) (incf i 3))
+                     ((and (char= c #\#) (eql next #\|))
+                      (let ((nest 1) (j (+ i 2)))
+                        (loop while (and (plusp nest) (< j n))
+                              do (cond ((and (char= (char text j) #\|) (< (1+ j) n)
+                                             (char= (char text (1+ j)) #\#))
+                                        (decf nest) (incf j 2))
+                                       ((and (char= (char text j) #\#) (< (1+ j) n)
+                                             (char= (char text (1+ j)) #\|))
+                                        (incf nest) (incf j 2))
+                                       (t (incf j))))
+                        (setf i j)))
+                     ((char= c #\\) (incf i 2))
+                     ((char= c #\() (incf depth) (incf i))
+                     ((char= c #\))
+                      (decf depth)
+                      (when (minusp depth) (return-from %delimiters-balanced-p nil))
+                      (incf i))
+                     (t (incf i)))))
+    (zerop depth)))
+
+(defun %repair-only-closes-at-end-p (original repaired)
+  "True when REPAIRED is ORIGINAL with nothing changed but the run of close
+parentheses (and whitespace) that ends it — closers appended at the end of
+the form, or excess ones dropped there. Every list then closes where it
+did in ORIGINAL, so the two READ alike up to the end. Parinfer closes a
+list wherever the indentation drops instead: on a form indented in a
+non-standard way that MOVES a delimiter — a LET's binding list closed
+after its first binding, an IF closed after its THEN (2026-10-07) — and
+the result still reads, meaning something else."
+  (flet ((closer-tail-stripped (text)
+           (string-right-trim '(#\Space #\Tab #\Newline #\Return #\)) text)))
+    (string= (closer-tail-stripped original) (closer-tail-stripped repaired))))
+
+(defun %changed-lines (original repaired &key (limit 12))
+  "Descriptions of the lines REPAIRED changes from ORIGINAL, at most LIMIT."
+  (let ((old (uiop:split-string original :separator '(#\Newline)))
+        (new (uiop:split-string repaired :separator '(#\Newline))))
+    (loop for i from 1
+          for a = (pop old)
+          for b = (pop new)
+          while (or a b)
+          unless (equal a b)
+            collect (format nil "line ~D: ~S => ~S" i (or a "") (or b ""))
+              into lines
+          finally (return (if (> (length lines) limit)
+                              (append (subseq lines 0 limit)
+                                      (list (format nil "... and ~D more"
+                                                    (- (length lines) limit))))
+                              lines)))))
+
+(define-condition repair-would-restructure (error)
+  ((cause :initarg :cause :reader repair-would-restructure-cause)
+   (lines :initarg :lines :reader repair-would-restructure-lines))
+  (:report
+   (lambda (c stream)
+     (format stream "REFUSED, nothing written: content does not read (~A), and ~
+                     parinfer's repair would MOVE delimiters, not only close the form ~
+                     at its end — it closes a list wherever the indentation drops, so ~
+                     non-standard indentation changes what the form means. Lines the ~
+                     repair would change:~%~{  ~A~%~}Balance the delimiters in content ~
+                     and resend it; balanced content is written as given."
+             (repair-would-restructure-cause c)
+             (repair-would-restructure-lines c))))
+  (:documentation "Signalled when content needs a parinfer repair that would
+change its structure (%REPAIR-ONLY-CLOSES-AT-END-P is false). A repair
+that changes meaning refuses; it does not proceed."))
+
 (defun %validate-and-repair-content (content &optional readtable-designator
                                              package-name source-path)
-  "Ensure CONTENT is a single valid form. If parsing fails, attempt to repair
-using parinfer:apply-indent-mode. Returns three values: the validated (possibly
+  "Ensure CONTENT is a single valid form. Content that reads is returned
+unchanged, byte for byte, however it is indented. Only when READ fails AND
+the delimiters do not balance (%DELIMITERS-BALANCED-P) is a repair tried
+with parinfer:apply-indent-mode — and that repair is REFUSED
+(REPAIR-WOULD-RESTRUCTURE, naming the lines) unless it only closes the
+form at its end (%REPAIR-ONLY-CLOSES-AT-END-P). Returns three values: the validated (possibly
 repaired) content, a parinfer warning or NIL, and the names (\"PACKAGE:SYMBOL\")
 the image could not resolve in a real package — accepted, not refused, since
 inside an edit that is usually a stale image rather than a typo (see
@@ -194,27 +298,44 @@ comments near a target form."
         (return-from %validate-and-repair-content (values content nil nil)))
       (multiple-value-bind (result err)
           (try-parse content)
-        (if result
-            (values result nil unresolved)
-            (let ((repaired (apply-indent-mode content)))
-              (multiple-value-bind (repaired-result repaired-err)
-                  (try-parse repaired)
-                (cond
-                  (repaired-result
-                   (log-event :info "lisp.edit.form" "auto-repair" "success"
-                              "original-error" (princ-to-string err))
-                   (let ((added-count (- (length repaired) (length content))))
-                     (values repaired-result
-                             (format nil "~D closing delimiter~:P ~
-                                          ~[were~;was~:;were~] added by parinfer"
-                                     added-count added-count)
-                             unresolved)))
-                  ((and (typep err 'multiple-top-level-forms-error)
-                        (typep repaired-err 'multiple-top-level-forms-error))
-                   (error err))
-                  (t
-                   (error "content parse error: ~A (repair also failed: ~A)"
-                          err repaired-err))))))))))
+        (cond
+          (result (values result nil unresolved))
+          ;; Balanced content failed for another reason: parinfer cannot
+          ;; fix that, only move delimiters until something reads.
+          ((%delimiters-balanced-p content)
+           (if (typep err 'multiple-top-level-forms-error)
+               (error err)
+               (error "content parse error: ~A (its delimiters balance, so no ~
+                       parinfer repair was attempted)" err)))
+          (t
+           (let ((repaired (apply-indent-mode content)))
+             (unless (%repair-only-closes-at-end-p content repaired)
+               (log-event :info "lisp.edit.form" "auto-repair" "refused"
+                          "original-error" (princ-to-string err))
+               (error 'repair-would-restructure
+                      :cause err :lines (%changed-lines content repaired)))
+             (multiple-value-bind (repaired-result repaired-err)
+                 (try-parse repaired)
+               (cond
+                 (repaired-result
+                  (log-event :info "lisp.edit.form" "auto-repair" "success"
+                             "original-error" (princ-to-string err))
+                  (let ((delta (- (count #\) repaired) (count #\) content))))
+                    (values repaired-result
+                            (if (minusp delta)
+                                (format nil "~D excess closing delimiter~:P at the end ~
+                                             of the form removed by parinfer"
+                                        (- delta))
+                                (format nil "~D closing delimiter~:P appended at the ~
+                                             end of the form by parinfer"
+                                        delta))
+                            unresolved)))
+                 ((and (typep err 'multiple-top-level-forms-error)
+                       (typep repaired-err 'multiple-top-level-forms-error))
+                  (error err))
+                 (t
+                  (error "content parse error: ~A (repair also failed: ~A)"
+                         err repaired-err)))))))))))
 
 (defun %apply-operation-preserve-spacing (text node operation content)
   (let ((start (cst-node-start node))
@@ -358,7 +479,10 @@ FORM-NAME, and OPERATION are always required. CONTENT is required for
 replace/insert_before/insert_after but ignored for delete.
 
 OPERATION must be one of: \"replace\", \"insert_before\", \"insert_after\", \"delete\".
-Missing closing parentheses are auto-repaired using parinfer (non-delete ops).
+CONTENT that reads is written exactly as given, however it is indented.
+Content whose delimiters do not balance is repaired with parinfer only when
+the repair closes the form at its end; a repair that would move a delimiter
+is refused, nothing written (REPAIR-WOULD-RESTRUCTURE).
 
 A symbol the image cannot resolve in a package that exists — the file is
 ahead of the image, or a typo — never stops the edit; it is REPORTED: as
@@ -479,7 +603,8 @@ form with no name (see %FIND-TARGET-AT)."
 Supports replace, insert_before, insert_after, and delete operations while preserving
 formatting and comments.
 PREFERRED METHOD for editing existing Lisp source code.
-Automatically repairs missing closing parentheses using parinfer (non-delete ops).
+Balanced content is written as given; missing closing parentheses at the end of the
+form are repaired using parinfer, and a repair that would move a delimiter is refused.
 ALWAYS use this tool instead of 'fs-write-file' when modifying Lisp forms to ensure
 safety and structure preservation."
   :args ((file_path :type :string :required t
@@ -498,7 +623,8 @@ Reader macro prefixes #: and : are stripped automatically, so
          (content :type :string
                   :description "Full Lisp form for the operation. Required for replace/insert_before/insert_after.
 Ignored for delete. Must contain exactly ONE top-level form.
-Missing closing parentheses are automatically repaired using parinfer.")
+Missing closing parentheses at the end of the form are repaired using parinfer;
+a repair that would move a delimiter inside the form is refused.")
          (dry_run :type :boolean
                   :description "When true, return a preview without writing to disk")
          (normalize_blank_lines :type :boolean

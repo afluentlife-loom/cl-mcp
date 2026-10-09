@@ -10,6 +10,7 @@
                           #:cst-node
                           #:cst-node-kind
                           #:cst-node-value
+                          #:cst-node-children
                           #:cst-node-start
                           #:cst-node-end)
   (:import-from #:cl-ppcre
@@ -210,8 +211,39 @@ remain distinguishable."
              (write-char c out)
              (incf i))))))))
 
-(defun %find-target (nodes form-type form-name)
+(defun %list-name-key (text)
+  "TEXT, the source of a form name that is a LIST — `(137 \"FunctionCall\")'
+in `(define-action (137 \"FunctionCall\") ...)' — as a comparison key:
+downcased, '#:' prefixes dropped, whitespace runs collapsed to one space
+and none kept just inside a parenthesis. lisp-outline prints such a name
+as its source text; %NORMALIZE-STRING's PRINC drops the quotes of a
+string inside it, so the printed name never matched (2026-10-07)."
+  (with-output-to-string (out)
+    (let ((pending-space nil) (last nil))
+      (loop for c across (%strip-hash-colon (string-downcase text))
+            do (if (%whitespace-char-p c)
+                   (setf pending-space t)
+                   (progn
+                     (when (and pending-space last (char/= last #\() (char/= c #\)))
+                       (write-char #\Space out))
+                     (setf pending-space nil last c)
+                     (write-char c out)))))))
+
+(defun %name-source (node text)
+  "The source text of top-level form NODE's name — its second element —
+sliced from TEXT, the file; its PRIN1 when TEXT or the element's span is
+not at hand (a form read with the CL reader carries no children)."
+  (let ((child (second (cst-node-children node))))
+    (if (and text child (typep child 'cst-node)
+             (< (cst-node-start child) (cst-node-end child) (1+ (length text))))
+        (subseq text (cst-node-start child) (cst-node-end child))
+        (prin1-to-string (second (cst-node-value node))))))
+
+(defun %find-target (nodes form-type form-name &optional text)
   "Find a target node matching FORM-TYPE and FORM-NAME.
+A name that is a list — `(define-action (41 \"FLWORExpr\") ...)' — matches
+FORM-NAME as lisp-outline prints it, its source text from TEXT, the file
+(%LIST-NAME-KEY).
 If FORM-NAME ends with [N] (e.g., 'resize[1]'), select the Nth match (0-indexed).
 If multiple matches exist without an index, signals an error with candidate info."
   (multiple-value-bind (base-name index)
@@ -230,9 +262,14 @@ provide a non-empty name (e.g. \"my-pkg\" instead of \"#:\" alone)"))
                       (eq (cst-node-kind node) :expr))
               do (let ((value (cst-node-value node)))
                    (when (and (consp value)
+                              (symbolp (car value))
                               (string= (string-downcase (symbol-name (car value))) form-type)
-                              (some (lambda (cand) (string= cand target))
-                                    (%definition-candidates value form-type)))
+                              (or (some (lambda (cand) (string= cand target))
+                                        (%definition-candidates value form-type))
+                                  (and (consp (cdr value)) (consp (second value))
+                                       (string= (%list-name-key base-name)
+                                                (%list-name-key
+                                                 (%name-source node text))))))
                      (push (cons node value) matches))))
       (setf matches (nreverse matches))
       (cond
@@ -354,7 +391,7 @@ Returns nine values:
           (destructuring-bind (nodes file-package-name) parsed
             (let ((target (if form-start
                               (%find-target-at nodes form-start)
-                              (%find-target nodes form-type-str form-name))))
+                              (%find-target nodes form-type-str form-name original))))
               (unless target
                 (error "Form ~A ~A not found in ~A" form-type form-name (namestring abs)))
               (let ((target-snippet (subseq original

@@ -15,6 +15,8 @@
   (:import-from #:cl-mcp/src/fs
                 #:fs-read-file
                 #:fs-write-file)
+  ;; the outline's printed form names (lisp-edit-form-list-valued-form-name)
+  (:import-from #:cl-mcp/src/utils/clgrep)
   (:import-from #:asdf
                 #:system-source-directory)
   (:import-from #:uiop
@@ -1191,3 +1193,92 @@ Used to prove that a dry-run summary does not grow with the size of the file."
           (let ((updated (fs-read-file path)))
             (ok (search "(x 2)" updated))
             (ok (search "(defun named () 1)" updated))))))))
+
+(deftest lisp-edit-form-balanced-content-written-as-given
+  (testing "balanced content indented the way parinfer misreads is written byte for byte"
+    ;; 2026-10-07: a LET at column 3 with its bindings at column 8, and an
+    ;; IF whose else-branch sits at the IF's own column. Parinfer closes a
+    ;; list wherever indentation drops, so it would close the binding list
+    ;; after the first binding and the IF after its THEN.
+    (let ((odd (format nil "(defun target (x)~%   (let ((a 1)~%        (b 2))~%    (if x~%    a~%    b)))")))
+      (with-temp-file "tests/tmp/edit-form-balanced-odd-indent.lisp"
+          (format nil "(defun target (x) x)~%")
+        (lambda (path)
+          (multiple-value-bind (updated warning changed-p)
+              (lisp-edit-form :file-path path :form-type "defun" :form-name "target"
+                              :operation "replace" :content odd)
+            (declare (ignore updated))
+            (ok changed-p)
+            (ok (null warning) "no parinfer pass, so no parinfer warning"))
+          (ok (string= (fs-read-file path) (format nil "~A~%" odd)))
+          (ok (equal (let ((*read-eval* nil)) (read-from-string (fs-read-file path)))
+                     (let ((*read-eval* nil)) (read-from-string odd)))))))))
+
+(deftest lisp-edit-form-refuses-a-repair-that-moves-delimiters
+  (testing "unbalanced content whose parinfer repair would move a delimiter is refused, nothing written"
+    (let ((content (format nil "(defun target (x)~%   (let ((a 1)~%        (b 2))~%    (if x~%    a~%    b))))")))
+      (with-temp-file "tests/tmp/edit-form-refuse-restructure.lisp"
+          (format nil "(defun target (x) x)~%")
+        (lambda (path)
+          (let ((before (fs-read-file path)))
+            (dolist (dry-run '(nil t))
+              (let ((c (handler-case
+                           (progn (lisp-edit-form :file-path path :form-type "defun"
+                                                  :form-name "target" :operation "replace"
+                                                  :content content :dry-run dry-run)
+                                  nil)
+                         (cl-mcp/src/lisp-edit-form:repair-would-restructure (c) c))))
+                (ok c "refused")
+                (when c
+                  (let ((lines (cl-mcp/src/lisp-edit-form:repair-would-restructure-lines c)))
+                    ;; the binding list closed early (line 2), the IF closed after THEN (line 4)
+                    (ok (find-if (lambda (l) (search "line 2:" l)) lines))
+                    (ok (find-if (lambda (l) (search "line 4:" l)) lines))
+                    (ok (search "REFUSED" (princ-to-string c)))))))
+            (ok (string= before (fs-read-file path)))))))))
+
+(deftest lisp-edit-form-delimiter-balance
+  (testing "parinfer is consulted only for content whose delimiters do not balance"
+    (let ((balanced-p #'cl-mcp/src/lisp-edit-form::%delimiters-balanced-p))
+      (ok (funcall balanced-p "(a (b) \"(\" #\\( |)| #| ( #| ) |# |# ; (
+)"))
+      (ok (not (funcall balanced-p "(a (b)")))
+      (ok (not (funcall balanced-p "(a))")))
+      (ok (not (funcall balanced-p ")(a")))))
+  (testing "balanced content that does not read is refused without a repair"
+    (with-temp-file "tests/tmp/edit-form-balanced-unreadable.lisp"
+        (format nil "(defun target () :old)~%")
+      (lambda (path)
+        (let ((msg (handler-case
+                       (progn (lisp-edit-form :file-path path :form-type "defun"
+                                              :form-name "target" :operation "replace"
+                                              :content "(defun target () #<x)")
+                              nil)
+                     (error (e) (princ-to-string e)))))
+          (ok (and msg (search "no parinfer repair was attempted" msg)))
+          (ok (search ":old" (fs-read-file path))))))))
+
+(deftest lisp-edit-form-list-valued-form-name
+  (testing "a form whose name is a list is reached by the name lisp-outline prints"
+    (with-temp-file "tests/tmp/edit-form-list-name.lisp"
+        (format nil "(define-action (41   \"FLWORExpr\") (n)~%  (list n))~%~%(define-action (137 \"FunctionCall\") (n)~%  (vector n))~%")
+      (lambda (path)
+        ;; the printed name: clgrep's, which lisp-outline shows
+        (let ((printed (cdr (assoc :name (cl-mcp/src/utils/clgrep::extract-form-type-and-name
+                                          "(define-action (137 \"FunctionCall\") (n) (vector n))")))))
+          (ok (string= printed "(137 \"FunctionCall\")"))
+          (lisp-edit-form :file-path path :form-type "define-action" :form-name printed
+                          :operation "replace"
+                          :content (format nil "(define-action (137 \"FunctionCall\") (n)~%  (vector n n))")))
+        ;; whitespace inside the name is not significant
+        (lisp-edit-form :file-path path :form-type "define-action" :form-name "(41 \"FLWORExpr\")"
+                        :operation "replace"
+                        :content (format nil "(define-action (41 \"FLWORExpr\") (n)~%  (list n n))"))
+        (let ((after (fs-read-file path)))
+          (ok (search "(vector n n)" after))
+          (ok (search "(list n n)" after)))
+        (ok (handler-case
+                (progn (lisp-edit-form :file-path path :form-type "define-action"
+                                       :form-name "(42 \"FLWORExpr\")" :operation "delete")
+                       nil)
+              (error (e) (search "not found" (princ-to-string e)))))))))
