@@ -251,6 +251,15 @@ inert: EVALUATE-EXPRESSION answers (READ-TIME-EVAL expression)."))
 (defmethod eclector.reader:evaluate-expression ((client cst-client) expression)
   (list 'read-time-eval expression))
 
+(defmethod eclector.reader:find-character ((client cst-client) (designator string))
+  "The character #\\DESIGNATOR names: Eclector's own table, then the host's
+NAME-CHAR. Eclector knows a fixed set of names; the host reader that will
+compile the file knows its own — SBCL's #\\Nul, #\\Esc, #\\Bell, #\\U+41,
+#\\GREEK_SMALL_LETTER_ALPHA — and a name the compiler accepts must not make
+the editors refuse the file (2026-10-10: heddle's src/ast.lisp, whose
+`#\\Nul' refused every edit to it)."
+  (or (call-next-method) (name-char designator)))
+
 (defun %parse-top-level-forms-core (text readtable)
   "Parse TEXT into CST nodes assuming *PACKAGE* and *LINE-TABLE* are already bound.
 An IN-READTABLE naming a readtable this image lacks does not stop the parse:

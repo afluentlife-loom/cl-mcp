@@ -72,3 +72,19 @@
                         nodes)))
       (ok (= 1 (length expr-nodes))
           (format nil "Expected 1 expr node, got ~A" (length expr-nodes))))))
+
+(deftest parse-top-level-forms-host-character-names
+  (testing "every character name the host's NAME-CHAR accepts reads as that character"
+    ;; 2026-10-10: Eclector's table lacks SBCL's #\Nul, so heddle's
+    ;; src/ast.lisp — `(char #\Nul :type character)' — refused every edit.
+    (dolist (name '("Nul" "Null" "Escape" "Esc" "Bell" "Del" "Soh" "Rubout" "Page"
+                    "Backspace" "Linefeed" "Tab" "U+41" "GREEK_SMALL_LETTER_ALPHA"))
+      (let ((expected (name-char name)))
+        (when expected                  ; a name this host lacks says nothing
+          (let ((node (first (parse-top-level-forms
+                              (format nil "(defstruct x (c #\\~A :type character))" name)))))
+            (ok (eql expected (second (third (cst-node-value node))))
+                (format nil "#\\~A" name)))))))
+  (testing "a name the host does not know is still a reader error"
+    (ok (handler-case (progn (parse-top-level-forms "(a #\\NoSuchCharacterName)") nil)
+          (error () t)))))
