@@ -6,8 +6,15 @@
 
 (defpackage #:cl-mcp/src/utils/fasls
   (:use #:cl)
+  (:import-from #:cl-mcp/src/utils/clgrep
+                #:collect-target-files)
+  (:import-from #:cl-mcp/src/utils/project-files
+                #:project-ignored-predicate)
   (:export #:fasl-source-directory
-           #:delete-same-second-fasls))
+           #:delete-same-second-fasls
+           #:registered-source-fasl-pairs
+           #:registered-system-files
+           #:registered-fasl-sources))
 
 (in-package #:cl-mcp/src/utils/fasls)
 
@@ -48,24 +55,62 @@ them.  Only systems already registered: one never loaded has no fasl to doubt."
   (find "fasl" (ignore-errors (asdf:output-files 'asdf:compile-op component))
         :key #'pathname-type :test #'equal))
 
-(defun %source-fasl-pairs (system-name)
-  "Return (SOURCE . FASL) for each source file of SYSTEM-NAME's project, from two
-places, since neither alone sees every file: the project's registered ASDF
-components (%PROJECT-SYSTEMS), which name a source of any extension --
-(:file \"main\" :type \"cl\") -- and the fasl the output translations give it; and
-every .lisp file under the project's source directory (FASL-SOURCE-DIRECTORY),
-which reaches a package-inferred subsystem this worker has not registered or has
-just cleared."
+(defun registered-source-fasl-pairs (system-name)
+  "Return (SOURCE . FASL) for each source file component of SYSTEM-NAME's
+project's registered systems (%PROJECT-SYSTEMS), which name a source of any
+extension -- (:file \"main\" :type \"cl\") -- with the fasl the output
+translations give it.  No directory is walked, so it is cheap; after a load
+every subsystem the load reached is registered."
   (let ((pairs '()))
-    (dolist (system (%project-systems system-name))
+    (dolist (system (%project-systems system-name) pairs)
       (dolist (file (%source-file-components system))
         (let ((source (asdf:component-pathname file))
               (fasl (%compiled-fasl file)))
           (when (and source fasl)
-            (push (cons source fasl) pairs)))))
-    (let ((source-dir (fasl-source-directory system-name)))
-      (when source-dir
-        (dolist (source (directory (merge-pathnames "**/*.lisp" source-dir)))
+            (push (cons source fasl) pairs)))))))
+
+(defun registered-system-files (system-name)
+  "Return the .asd files that define SYSTEM-NAME's project's registered systems
+(%PROJECT-SYSTEMS), each once.  A warning signalled while one of them loads, such
+as ASDF's about a system named against its conventions, is the project's."
+  (remove-duplicates
+   (remove nil (mapcar (lambda (system) (ignore-errors (asdf:system-source-file system)))
+                       (%project-systems system-name)))
+   :test #'equal :key #'namestring))
+
+(defun registered-fasl-sources ()
+  "Return an EQUAL table from the namestring of the FASL each source file
+component of every registered system compiles to, to that source.  It tells
+which file a FASL being loaded was compiled from, which the output translations
+cannot be asked in reverse."
+  (let ((table (make-hash-table :test #'equal)))
+    (dolist (name (asdf:registered-systems) table)
+      (let ((system (ignore-errors (asdf:registered-system name))))
+        (when system
+          (dolist (file (%source-file-components system))
+            (let ((source (asdf:component-pathname file))
+                  (fasl (%compiled-fasl file)))
+              (when (and source fasl)
+                (setf (gethash (namestring fasl) table) source)))))))))
+
+(defun %source-fasl-pairs (system-name &key (ignored-p (project-ignored-predicate)))
+  "Return (SOURCE . FASL) for each source file of SYSTEM-NAME's project, from two
+places, since neither alone sees every file: REGISTERED-SOURCE-FASL-PAIRS, and
+every .lisp file under the project's source directory (FASL-SOURCE-DIRECTORY),
+which reaches a package-inferred subsystem this worker has not registered or has
+just cleared.  The walk leaves out what the directory's .gitignore does
+(COLLECT-TARGET-FILES) and what IGNORED-P, by default the project root's
+.gitignore (PROJECT-IGNORED-PREDICATE), does: a dependency vendored there is not
+the project's, and walking it cost seconds on every load of a large project.
+When the directory itself is left out -- the system being loaded is such a
+dependency -- IGNORED-P would leave out everything, so it is not applied."
+  (let* ((pairs (registered-source-fasl-pairs system-name))
+         (source-dir (fasl-source-directory system-name))
+         (filter-p (and source-dir (not (funcall ignored-p source-dir)))))
+    (when source-dir
+      (dolist (source (ignore-errors (collect-target-files source-dir)))
+        (when (and (equal "lisp" (pathname-type source))
+                   (not (and filter-p (funcall ignored-p source))))
           (let ((fasl (ignore-errors
                        (asdf:apply-output-translations (compile-file-pathname source)))))
             (when fasl

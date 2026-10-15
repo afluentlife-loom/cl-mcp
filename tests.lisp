@@ -36,6 +36,7 @@
   (:import-from #:cl-mcp/tests/test-runner-test)
   (:import-from #:cl-mcp/tests/tools-helpers-test)
   (:import-from #:cl-mcp/tests/utils-paths-test)
+  (:import-from #:cl-mcp/tests/project-files-test)
   (:import-from #:cl-mcp/tests/path-specs-test)
   (:import-from #:cl-mcp/tests/write-path-specs-test)
   (:import-from #:cl-mcp/tests/utils-bounded-stream-test)

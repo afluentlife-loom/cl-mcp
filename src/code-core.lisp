@@ -7,11 +7,12 @@
   (:import-from #:cl-mcp/src/log #:log-event)
   (:import-from #:cl-mcp/src/project-root #:*project-root*)
   (:import-from #:cl-mcp/src/utils/paths
-                #:allowed-read-path #:normalize-path-for-display #:path-inside-p
+                #:allowed-read-path #:normalize-path-for-display
                 #:native-path-namestring)
+  (:import-from #:cl-mcp/src/utils/project-files
+                #:project-file-predicate)
   (:import-from #:uiop
-                #:read-file-string #:ensure-pathname
-                #:ensure-directory-pathname #:absolute-pathname-p)
+                #:read-file-string #:ensure-pathname #:absolute-pathname-p)
   (:import-from #:cl-mcp/src/code-refs-core
                 #:sequence->list
                 #:resolve-target
@@ -773,17 +774,20 @@ uses it to point at clos-describe, and must still describe what it cannot."
          (typep (fdefinition symbol) 'generic-function)
          (length (sb-mop:generic-function-methods (fdefinition symbol))))))
 
-(defun %path-inside-project-p (pathname)
-  "Return T when PATHNAME is inside *project-root*.
+(defun %project-path-p (pathname &optional (own-p (project-file-predicate)))
+  "Return T when PATHNAME is the project's own file per OWN-P, by default
+PROJECT-FILE-PREDICATE: under *project-root* and not ignored, so a dependency
+vendored under the root is left out.  A caller testing many paths passes one
+predicate it made, so the .gitignore is read once.
 For relative paths, verifies the file exists under project root.
 Returns T for any path when *project-root* is not set."
   (and pathname
        (if *project-root*
            (if (uiop:absolute-pathname-p pathname)
-               (path-inside-p (uiop:ensure-pathname pathname :want-relative nil)
-                              (uiop:ensure-directory-pathname *project-root*))
+               (and (funcall own-p (uiop:ensure-pathname pathname :want-relative nil)) t)
                ;; Relative path: must exist under project root
-               (and (probe-file (merge-pathnames pathname *project-root*)) t))
+               (let ((path (merge-pathnames pathname *project-root*)))
+                 (and (probe-file path) (funcall own-p path) t)))
            t)))
 
 (defun %line-snippet (pathname line)
@@ -934,6 +938,7 @@ index of its top-level form in the file."
          (offset-fn (and pkg (find-symbol "DEFINITION-SOURCE-CHARACTER-OFFSET" pkg)))
          (form-path-fn (and pkg (find-symbol "DEFINITION-SOURCE-FORM-PATH" pkg)))
          (write-date-fn (and pkg (find-symbol "DEFINITION-SOURCE-FILE-WRITE-DATE" pkg)))
+         (own-p (and project-only (project-file-predicate)))
          (seen (make-hash-table :test #'equal))
          (entries '()))
     (dolist (finder '("WHO-CALLS" "WHO-MACROEXPANDS" "WHO-BINDS" "WHO-REFERENCES" "WHO-SETS")
@@ -946,7 +951,7 @@ index of its top-level form in the file."
               (multiple-value-bind (pathname path line)
                   (%definition->path/line definition path-fn offset-fn)
                 (when (and path line
-                           (or (not project-only) (%path-inside-project-p pathname)))
+                           (or (not project-only) (%project-path-p pathname own-p)))
                   (let* ((type (%finder->type finder))
                          (caller (or (%format-xref-caller caller-name) ""))
                          (key (format nil "~A:~A:~A:~A" path line type caller)))

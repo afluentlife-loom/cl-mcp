@@ -50,14 +50,17 @@ exactly as it does under asdf:load-system and run-tests; the error gives that
 warning and its place as the cause, apart from any warning that only came
 before it.  A full warning signalled outside a compilation (while
 a file loads, or an undefined variable reported at the end) is listed and the
-load goes on.  STYLE-WARNINGs (unused variable, undefined function) never fail
-a load: they are counted and summed up by kind.  SBCL 'redefining X
-in DEFUN' notifications are dropped, on a first load and a reload alike:
-redefining is ordinary Common Lisp development, and a reload exists to do it.
-Every warning kept is in the JSON warning_records, with its severity, class
-and message, fails_compile when it is a full warning signalled while a file
-compiled, and, where the compiler has a place for it, file, line and form: the
-enclosing definition as the compiler names it, such as (defun wrong-arity).
+load goes on.  The project's own full warnings are listed first; those from
+outside its files (in_project false: a dependency's, which come first as it
+loads first) are summed up by kind after them.  STYLE-WARNINGs (unused
+variable, undefined function) never fail a load: they are counted and summed
+up by kind.  SBCL 'redefining X in DEFUN' notifications are dropped, on a first
+load and a reload alike: redefining is ordinary Common Lisp development, and a
+reload exists to do it.  Every warning kept is in the JSON warning_records,
+with its severity, class and message, fails_compile when it is a full warning
+signalled while a file compiled, in_project, and, where the compiler has a
+place for it, file, line and form: the enclosing definition as the compiler
+names it, such as (defun wrong-arity).
 form says where the warning is; it is not an argument for lisp-edit-form.  For
 a top-level defun, defmacro or defclass the two read alike, but a method is
 named by its specializers alone, (defmethod area (circle)), and a definition

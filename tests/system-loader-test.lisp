@@ -675,6 +675,174 @@ when given, is the text of a second file, compiled once the first has loaded."
          (ok (null (nth-value 1 (gethash "compile_failed" ht)))
              "what the builder was told about the error is not left in the response"))))))
 
+(defun %load-app-with-dependency (&key gitignore (app-dir "") dep-dir
+                                       (system "clmcp-app-fixture"))
+  "Under a fresh root holding GITIGNORE as its .gitignore, write the system
+clmcp-app-fixture in APP-DIR and clmcp-dep-fixture, which it depends on, in
+DEP-DIR, load SYSTEM (the app unless given) with load-system and the root as the
+project root, remove everything, and return load-system's result.  The
+dependency warns twice: as it loads, where the compiler has no place for the
+warning, and with an undefined variable, which has one.  The app reads an
+undefined variable of its own."
+  (let ((root (uiop:ensure-directory-pathname
+               (uiop:merge-pathnames*
+                (format nil "clmcp-vendored-~36R/"
+                        (random most-positive-fixnum (make-random-state t)))
+                (uiop:temporary-directory)))))
+    (flet ((write-file* (name text)
+             (let ((path (uiop:merge-pathnames* name root)))
+               (ensure-directories-exist path)
+               (with-open-file (out path :direction :output :if-exists :supersede)
+                 (write-string text out))))
+           (forget ()
+             (dolist (system '("clmcp-app-fixture" "clmcp-dep-fixture"))
+               (asdf:clear-system system))
+             (dolist (package '("CLMCP-APP-FIXTURE" "CLMCP-DEP-FIXTURE"))
+               (ignore-errors (delete-package package)))))
+      (unwind-protect
+           (progn
+             (write-file* ".gitignore" gitignore)
+             (write-file* (concatenate 'string dep-dir "clmcp-dep-fixture.asd")
+                          "(defsystem \"clmcp-dep-fixture\" :components ((:file \"dep\")))")
+             (write-file* (concatenate 'string dep-dir "dep.lisp")
+                          "(defpackage #:clmcp-dep-fixture (:use #:cl))
+(in-package #:clmcp-dep-fixture)
+(defun dep-reads-undefined () *dep-no-such-special*)
+(warn \"the dependency warns as it loads\")")
+             (write-file* (concatenate 'string app-dir "clmcp-app-fixture.asd")
+                          "(defsystem \"clmcp-app-fixture\" :depends-on (\"clmcp-dep-fixture\")
+  :components ((:file \"app\")))")
+             (write-file* (concatenate 'string app-dir "app.lisp")
+                          "(defpackage #:clmcp-app-fixture (:use #:cl))
+(in-package #:clmcp-app-fixture)
+(defun reads-undefined () *no-such-special*)")
+             (forget)
+             (asdf:load-asd (uiop:merge-pathnames*
+                             (concatenate 'string dep-dir "clmcp-dep-fixture.asd") root))
+             (asdf:load-asd (uiop:merge-pathnames*
+                             (concatenate 'string app-dir "clmcp-app-fixture.asd") root))
+             (let ((cl-mcp/src/project-root:*project-root* (truename root)))
+               (load-system system :force nil)))
+        (forget)
+        (uiop:delete-directory-tree root :validate t :if-does-not-exist :ignore)))))
+
+(defun %warning-with (text records)
+  "Return the record among RECORDS whose message contains TEXT."
+  (find text records :key (lambda (r) (gethash "message" r)) :test #'search))
+
+(defun %own-p (record)
+  "True when RECORD is there and says it is the project's."
+  (and record (eq t (gethash "in_project" record))))
+
+(defun %outside-p (record)
+  "True when RECORD is there and says it is not the project's: in_project is
+present and false, not merely missing."
+  (and record (eq yason:false (gethash "in_project" record))))
+
+(deftest load-system-tells-the-projects-warnings-from-a-vendored-dependencys
+  ;; A qlot project: the dependency lives under the project root, in .qlot/,
+  ;; which .gitignore leaves out.
+  (let* ((ht (%load-app-with-dependency :gitignore ".qlot/" :dep-dir ".qlot/dep/"))
+         (records (coerce (gethash "warning_records" ht) 'list))
+         (loading (%warning-with "the dependency warns" records))
+         (placed (%warning-with "DEP-NO-SUCH-SPECIAL" records))
+         (own (%warning-with "*NO-SUCH-SPECIAL*" (remove placed records)))
+         (text (%response-text "clmcp-app-fixture" ht)))
+    (ok (equal "loaded" (gethash "status" ht)))
+    (testing "the dependency's warnings are not the project's"
+      (ok (%outside-p loading) "one signalled as its file loads, judged by that file")
+      (ok (and placed (gethash "file" placed) (%outside-p placed))
+          "one with a compiler place, judged by the place"))
+    (testing "the project's own is, and is listed with its place"
+      (ok (%own-p own))
+      (ok (search "app.lisp:3 (defun reads-undefined)" text)))
+    (testing "the dependency's are summed up after it"
+      (ok (search "2 from outside the project's files" text))
+      (ok (< (search "CLMCP-APP-FIXTURE::*NO-SUCH-SPECIAL*" text)
+             (search "from outside the project" text))))))
+
+(deftest load-system-judges-a-dependency-by-the-roots-gitignore
+  ;; The app is in a subdirectory of the root and its dependency vendored below
+  ;; it; only the root's .gitignore says the dependency is not the project's.
+  ;; Walking the app's directory for its files took the dependency in.
+  (let* ((ht (%load-app-with-dependency :gitignore "apps/foo/vendor/"
+                                        :app-dir "apps/foo/"
+                                        :dep-dir "apps/foo/vendor/dep/"))
+         (records (coerce (gethash "warning_records" ht) 'list)))
+    (ok (equal "loaded" (gethash "status" ht)))
+    (ok (%outside-p (%warning-with "the dependency warns" records)))
+    (ok (%outside-p (%warning-with "DEP-NO-SUCH-SPECIAL" records)))))
+
+(deftest load-system-takes-a-vendored-systems-own-warnings-as-the-projects
+  ;; Loading the dependency by itself, as one does while working on a library
+  ;; kept in .qlot/local-projects/: its warnings are the code being worked on,
+  ;; though the root's .gitignore leaves its directory out.
+  (let* ((ht (%load-app-with-dependency :gitignore ".qlot/" :dep-dir ".qlot/dep/"
+                                        :system "clmcp-dep-fixture"))
+         (records (coerce (gethash "warning_records" ht) 'list))
+         (text (%response-text "clmcp-dep-fixture" ht)))
+    (ok (equal "loaded" (gethash "status" ht)))
+    (ok (%own-p (%warning-with "the dependency warns" records)))
+    (ok (%own-p (%warning-with "DEP-NO-SUCH-SPECIAL" records)))
+    (ok (search "dep.lisp:3 (defun dep-reads-undefined)" text))
+    (ok (null (search "outside the project" text)))))
+
+(deftest load-system-takes-a-sibling-systems-warnings-as-the-projects
+  ;; Two primary systems side by side in the root, the app depending on the
+  ;; other: both are the project's.  The other one's warning signalled as its
+  ;; FASL loads is judged by the source the FASL was compiled from, not by
+  ;; where the FASL is cached.
+  (let* ((ht (%load-app-with-dependency :gitignore "" :dep-dir ""))
+         (records (coerce (gethash "warning_records" ht) 'list)))
+    (ok (equal "loaded" (gethash "status" ht)))
+    (ok (%own-p (%warning-with "the dependency warns" records)))
+    (ok (%own-p (%warning-with "DEP-NO-SUCH-SPECIAL" records)))))
+
+(deftest load-system-leaves-a-warning-naming-no-file-unjudged
+  ;; Nothing tells whose a warning signalled outside any file is, so it is
+  ;; listed whole rather than summed up as a dependency's.
+  (let* ((in-project (cl-mcp/src/system-loader-core::%in-project-predicate "no-such-system"))
+         (tables (cl-mcp/src/system-loader-core::%warning-record-tables
+                  (list (list :severity "warning" :class "SIMPLE-WARNING"
+                              :message "from nowhere" :kind-key '(simple-warning)))
+                  :in-project in-project)))
+    (ok (null (nth-value 1 (gethash "in_project" (first tables)))))))
+
+(deftest load-system-takes-the-loaded-projects-asd-as-the-projects
+  ;; A warning signalled while the loaded system's own .asd loads -- ASDF's
+  ;; about a secondary system misnamed, say -- is the project's, though the
+  ;; .asd is no source component and sits in an ignored directory.
+  (%call-with-probe-files
+   '((".gitignore" . ".qlot/")
+     (".qlot/dep/clmcp-asd-probe.asd" . "(defsystem \"clmcp-asd-probe\")"))
+   (lambda (path)
+     (let ((asd (truename (funcall path ".qlot/dep/clmcp-asd-probe.asd"))))
+       (unwind-protect
+            (progn
+              (asdf:load-asd asd)
+              (let ((in-project
+                      (let ((cl-mcp/src/project-root:*project-root*
+                              (truename (funcall path ""))))
+                        (cl-mcp/src/system-loader-core::%in-project-predicate
+                         "clmcp-asd-probe"))))
+                (ok (eq t (funcall in-project (list :loading asd))))))
+         (asdf:clear-system "clmcp-asd-probe"))))))
+
+(deftest load-system-takes-the-loaded-systems-files-as-the-projects
+  ;; A system loaded from outside the project root is still the code the caller
+  ;; is working on: its warnings are not summed up as a dependency's.
+  (%call-with-warning-system
+   "(defun reads-undefined () *no-such-special*)"
+   (lambda (system forget)
+     (declare (ignore forget))
+     (let* ((ht (let ((cl-mcp/src/project-root:*project-root*
+                        (asdf:system-source-directory :cl-mcp)))
+                  (load-system system :force nil)))
+            (own (find "NO-SUCH-SPECIAL" (coerce (gethash "warning_records" ht) 'list)
+                       :key (lambda (r) (gethash "message" r)) :test #'search)))
+       (ok own)
+       (ok (and own (eq t (gethash "in_project" own))))))))
+
 (deftest a-load-that-never-started-reports-nothing-of-the-load-before-it
   ;; What a failed load had recorded was kept where the next call could read
   ;; it.  A load refused before it began -- the ASDF lock held by another load
@@ -901,6 +1069,92 @@ property list of its JSON keys and values."
                                    "src/b.lisp:3 (defun f3)")))
         (ok (search "3x the same kind" text))
         (ok (search expected text))))))
+
+(defun %full-warning (message &key (kind 1) (in-project t in-project-p) file line)
+  "Return a full warning record with MESSAGE.  IN-PROJECT, when given, is stored
+as load-system's core stores it: T, or YASON:FALSE for a warning from outside."
+  (let ((record (%warning-record "severity" "warning"
+                                 "class" "SIMPLE-WARNING"
+                                 "message" message
+                                 "kind" kind)))
+    (when in-project-p
+      (setf (gethash "in_project" record) (if in-project t yason:false)))
+    (when file
+      (setf (gethash "file" record) file
+            (gethash "line" record) line
+            (gethash "form" record) "(defun reads-undefined)"))
+    record))
+
+(deftest load-system-response-lists-the-projects-warnings-before-the-rest
+  ;; A project's dependencies load first, so their warnings come first; listed
+  ;; in that order, they took every line and hid the project's own.
+  (let* ((outside (append
+                   (loop for i from 1 to 3
+                         collect (%full-warning
+                                  (format nil "System definition file dep~D.asd contains ~
+definition for system \"dep~D-test\"." i i)
+                                  :kind 1 :in-project nil))
+                   (list (%full-warning "redefining DEFTYPE type to be a class: DBI:<A>"
+                                        :kind 2 :in-project nil)
+                         (%full-warning "redefining DEFTYPE type to be a class: DBI:<B>"
+                                        :kind 2 :in-project nil))))
+         (own (%full-warning "undefined variable: APP::*NO-SUCH-SPECIAL*"
+                             :kind 3 :file "src/app.lisp" :line 4))
+         (text (let ((cl-mcp/src/tools/response-builders::*load-full-warnings-shown* 2))
+                 (%response-text "fake-system" (%loaded-with (append outside (list own)))))))
+    (testing "the project's warning is listed whole, with its place"
+      (ok (search "undefined variable: APP::*NO-SUCH-SPECIAL*" text))
+      (ok (search "at src/app.lisp:4 (defun reads-undefined)" text)))
+    (testing "and before anything from outside the project"
+      (ok (< (search "undefined variable" text)
+             (search "from outside the project" text))))
+    (testing "the rest are summed up by kind, not listed one by one"
+      (ok (search "5 from outside the project's files" text))
+      (ok (search "3x" text))
+      (ok (search "2x" text))
+      (ok (null (search "dep2.asd" text)))
+      (ok (null (search "<B>" text))))
+    (testing "the count still covers every warning"
+      (ok (search "(6 warnings)" text)))))
+
+(deftest load-system-response-keeps-a-record-without-in-project-in-the-list
+  ;; A record carries no in_project when nothing tells whose it is: it is
+  ;; listed whole, never hidden in the summary.
+  (let ((text (%response-text
+               "fake-system"
+               (%loaded-with (list (%full-warning "a warning nothing tells the origin of"))))))
+    (ok (search "a warning nothing tells the origin of" text))
+    (ok (null (search "outside the project" text)))))
+
+(deftest load-system-response-never-sums-up-the-warning-a-file-was-refused-for
+  ;; A dependency compiled fresh can be refused too, and its warning is then
+  ;; the cause of the failure, wherever it comes from.
+  (let* ((refusing (%full-warning "Duplicate definition for TWICE found in one file."
+                                  :in-project nil))
+         (before (%full-warning "redefining DEFTYPE type to be a class: DBI:<A>"
+                                :kind 2 :in-project nil))
+         (text (progn
+                 (setf (gethash "fails_compile" refusing) t)
+                 (%response-text "fake-system"
+                                 (%failed-with (list before refusing) :compile-failed t)))))
+    (ok (search "ASDF refuses a file that compiles with a WARNING" text))
+    (ok (search "Duplicate definition for TWICE" text))
+    (ok (search "1 from outside the project's files" text))))
+
+(deftest load-system-response-gives-the-variance-hint-for-the-projects-packages-only
+  ;; A dependency at variance with its DEFPACKAGE is nothing the project can
+  ;; fix, and the hint would have it throw away the worker for nothing.
+  (flet ((variance (in-project)
+           (let ((record (%full-warning "USOCKET also exports the following symbols: (X)"
+                                        :in-project in-project)))
+             (setf (gethash "class" record) "SB-INT:PACKAGE-AT-VARIANCE")
+             record))
+         (text (record)
+           (let ((ht (%loaded-with (list record))))
+             (setf (gethash "warning_details" ht) (gethash "message" record))
+             (%response-text "fake-system" ht))))
+    (ok (null (search "pool-kill-worker" (text (variance nil)))))
+    (ok (search "pool-kill-worker" (text (variance t))))))
 
 (defun %failed-with (records &key compile-failed)
   "Return a failed load-system result that carries RECORDS, as the core builds

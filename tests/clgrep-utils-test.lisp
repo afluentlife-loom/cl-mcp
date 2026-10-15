@@ -161,11 +161,34 @@ Final line
       (ok (null (extract-toplevel-form content 3))))))
 
 (deftest test-glob-to-regex
-  (testing "should convert glob patterns to regex"
-    (ok (string= "[^/]*\\.o" (glob-to-regex "*.o")))
-    (ok (string= "(?:.*/|)[^/]*\\.log" (glob-to-regex "**/*.log")))
-    (ok (string= "\\.git/.*" (glob-to-regex ".git/")))
-    (ok (string= "^root-only\\.txt" (glob-to-regex "/root-only.txt")))))
+  ;; Judged by what a pattern leaves out, as git does, not by the regex text.
+  (flet ((ignored-p (pattern path)
+           (path-ignored-p (merge-pathnames path #P"/project/") #P"/project/"
+                           (list (glob-to-regex pattern)))))
+    (testing "a name matches whole path components, at any depth"
+      (ok (ignored-p "log" "log"))
+      (ok (ignored-p "log" "log/app.txt"))
+      (ok (ignored-p "log" "api/log/app.txt"))
+      (ok (not (ignored-p "log" "src/catalog.lisp")))
+      (ok (not (ignored-p "out" "src/routes.lisp")))
+      (ok (not (ignored-p "build" "src/builder.lisp"))))
+    (testing "a wildcard stays within one component"
+      (ok (ignored-p "*.o" "test.o"))
+      (ok (ignored-p "*.o" "src/test.o"))
+      (ok (not (ignored-p "*.o" "src/test.org"))))
+    (testing "a trailing slash matches a directory and what is in it"
+      (ok (ignored-p ".qlot/" ".qlot/"))
+      (ok (ignored-p ".qlot/" ".qlot/dists/dep/dep.lisp"))
+      (ok (ignored-p ".git/" "sub/.git/config"))
+      (ok (not (ignored-p ".qlot/" "src/my.qlot/x.lisp"))))
+    (testing "a slash at the start or in the middle anchors to the root"
+      (ok (ignored-p "/root-only.txt" "root-only.txt"))
+      (ok (not (ignored-p "/root-only.txt" "sub/root-only.txt")))
+      (ok (ignored-p "log/*" "log/app.txt"))
+      (ok (not (ignored-p "log/*" "api/log/app.txt"))))
+    (testing "**/ matches at any depth"
+      (ok (ignored-p "**/*.log" "app.log"))
+      (ok (ignored-p "**/*.log" "logs/app.log")))))
 
 (deftest test-collect-target-files
   (testing "should collect .lisp, .asd, and .ros files from project"
