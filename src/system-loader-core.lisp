@@ -14,6 +14,7 @@
                 #:log-event)
   (:import-from #:cl-mcp/src/tools/helpers
                 #:make-ht
+                #:json-bool
                 #:transient-error)
   (:import-from #:cl-mcp/src/utils/sanitize
                 #:sanitize-for-json)
@@ -24,7 +25,12 @@
                 #:%offset->line)
   (:import-from #:cl-mcp/src/utils/fasls
                 #:fasl-source-directory
-                #:delete-same-second-fasls)
+                #:delete-same-second-fasls
+                #:registered-source-fasl-pairs
+                #:registered-system-files
+                #:registered-fasl-sources)
+  (:import-from #:cl-mcp/src/utils/project-files
+                #:project-file-predicate)
   (:export #:load-system
            #:*system-load-lock-wrapper*))
 
@@ -191,8 +197,10 @@ a form_name is written with."
   "Return WARNING as a property list: :SEVERITY, :CLASS, :MESSAGE, the :KIND-KEY
 that groups it, whether a file was :COMPILING when it was signalled and, when
 the compiler has a place for it, the :FILE, the octet :POSITION and the
-enclosing :FORM.  Runs in the handler, inside whatever signalled, so it must not
-signal itself: a part that cannot be had is left out.
+enclosing :FORM.  :LOADING is the file being loaded, source or FASL: the only
+file a warning signalled as a file loads has, so it is what tells a dependency's
+from the project's.  Runs in the handler, inside whatever signalled, so it must
+not signal itself: a part that cannot be had is left out.
 
 :COMPILING is true inside COMPILE-FILE and nowhere else.  It is not the same as
 having a place: an undefined variable is reported when the compilation unit
@@ -207,14 +215,57 @@ ends, after every COMPILE-FILE has returned, with the place of the reference."
             :compiling (and *compile-file-truename* t)
             :file (and (typep file '(or pathname string)) file)
             :position (and (integerp position) position)
-            :form (ignore-errors (%enclosing-form-label context))))))
+            :form (ignore-errors (%enclosing-form-label context))
+            :loading *load-truename*))))
 
-(defun %warning-record-tables (records)
+(defun %in-project-predicate (system-name)
+  "Return a function of a warning record that says whether the warning came from
+the project's own code: T, NIL, or :UNKNOWN when nothing tells -- the record
+names no file, or a FASL no registered system compiles.
+The file is the record's place, or else the file loading when it was signalled;
+a FASL stands for the source a registered system compiles into it
+(REGISTERED-FASL-SOURCES), wherever the FASL is kept.  The source is the
+project's when it is a source or .asd file of SYSTEM-NAME's project
+(REGISTERED-SOURCE-FASL-PAIRS, REGISTERED-SYSTEM-FILES) -- the code being worked
+on, wherever it lies, even in a directory the root's .gitignore leaves out -- or
+a project file (PROJECT-FILE-PREDICATE).
+
+The root is read when the predicate is made.  The tables are built on first
+use: by then the load has registered the systems it reached."
+  (let ((own-p (project-file-predicate))
+        (fasl-type (uiop:compile-file-type))
+        (sources nil)
+        (fasl-sources nil))
+    (lambda (record)
+      (let* ((file (or (getf record :file) (getf record :loading)))
+             (path (and file (ignore-errors (pathname file)))))
+        (when (and path (equal fasl-type (pathname-type path)))
+          (unless fasl-sources
+            (setf fasl-sources (or (ignore-errors (registered-fasl-sources))
+                                   (make-hash-table :test #'equal))))
+          (setf path (gethash (namestring path) fasl-sources)))
+        (cond
+          ((null path) :unknown)
+          (t
+           (unless sources
+             (setf sources (make-hash-table :test #'equal))
+             (loop for (source) in (ignore-errors (registered-source-fasl-pairs system-name))
+                   do (setf (gethash (namestring source) sources) t))
+             (dolist (asd (ignore-errors (registered-system-files system-name)))
+               (setf (gethash (namestring asd) sources) t)))
+           (or (gethash (namestring path) sources)
+               (funcall own-p path))))))))
+
+(defun %warning-record-tables (records &key in-project)
   "Return RECORDS, property lists in the order signalled, as the JSON objects
 load-system reports: \"severity\", \"class\", \"message\", \"kind\" -- a number
 the records of one kind share, counted from 1 in order of first appearance --
 and, for a warning the compiler has a place for, \"file\", \"line\" and \"form\".
 The line is that of the top-level form; SBCL keeps no finer place.
+
+\"in_project\", given IN-PROJECT, a function of a record (%IN-PROJECT-PREDICATE),
+is whether the warning came from the project's own files; absent when nothing
+tells, so the warning is listed whole rather than taken for a dependency's.
 
 \"fails_compile\" is true on a full warning signalled while a file compiled, and
 absent from every other record.  COMPILE-FILE reports failure for such a
@@ -235,6 +286,12 @@ for from the ones that only came before."
                               "kind" (1+ kind))))
          (when (and (getf record :compiling) (equal severity "warning"))
            (setf (gethash "fails_compile" table) t))
+         (when in-project
+           ;; A judgement that fails tells nothing, so it hides nothing either.
+           (let ((own (handler-case (funcall in-project record)
+                        (error () :unknown))))
+             (unless (eq own :unknown)
+               (setf (gethash "in_project" table) (json-bool own)))))
          (when file
            (let ((shown (ignore-errors (normalize-path-for-display file)))
                  (line (ignore-errors (%offset->line file (getf record :position))))
@@ -254,10 +311,10 @@ before it reported records, kept for the clients that read it."
   (format nil "~{~A~%~}"
           (mapcar (lambda (table) (gethash "message" table)) tables)))
 
-(defun %call-with-suppressed-output (thunk &key on-unwind)
+(defun %call-with-suppressed-output (thunk &key on-unwind in-project)
   "Call THUNK with compilation and load output suppressed.
 Returns (values thunk-result warning-count warning-details compiler-stderr
-warning-records).
+warning-records).  IN-PROJECT is passed on to %WARNING-RECORD-TABLES.
 
 When THUNK unwinds there is nothing to return them through, so ON-UNWIND, a
 function of the compiler's output so far and the warning records, is called
@@ -289,7 +346,7 @@ later load agree -- where ASDF by itself, and run-tests, refuse the file."
                           (find-restart 'muffle-warning))
                  (invoke-restart 'muffle-warning))))
            (finished-records ()
-             (%warning-record-tables (reverse records)))
+             (%warning-record-tables (reverse records) :in-project in-project))
            (unwound ()
              ;; In a cleanup form, on the way out of an error: nothing here
              ;; may signal over it.
@@ -298,7 +355,8 @@ later load agree -- where ASDF by itself, and run-tests, refuse the file."
                 (funcall on-unwind
                          (ignore-errors (get-output-stream-string stderr))
                          (ignore-errors (%warning-record-tables
-                                         (reverse records))))))))
+                                         (reverse records)
+                                         :in-project in-project)))))))
       #+sbcl
       (let ((err-sym (find-symbol "*COMPILER-ERROR-OUTPUT*" "SB-C"))
             (note-sym (find-symbol "*COMPILER-NOTE-STREAM*" "SB-C"))
@@ -446,18 +504,19 @@ If ASDF signals MISSING-COMPONENT for the requested system, searches
 registering it."
   (check-type system-name string)
   (check-type timeout-seconds (or null (real (0))))
-  (let ((system-name (string-downcase system-name))
-        (start-time (get-internal-real-time))
-        ;; Set by the load thread; read after it has been joined.
-        (fasls-deleted nil)
-        (fasls-cleared-from nil)
-        (same-second-deleted nil)
-        ;; What the load had printed and recorded when it unwound.  This
-        ;; call's own, set by its own load: a load refused before it began
-        ;; has nothing here, where a place shared between calls would still
-        ;; hold what the load before it left.
-        (unwound-stderr nil)
-        (unwound-records nil))
+  (let* ((system-name (string-downcase system-name))
+         (start-time (get-internal-real-time))
+         (in-project (%in-project-predicate system-name))
+         ;; Set by the load thread; read after it has been joined.
+         (fasls-deleted nil)
+         (fasls-cleared-from nil)
+         (same-second-deleted nil)
+         ;; What the load had printed and recorded when it unwound.  This
+         ;; call's own, set by its own load: a load refused before it began
+         ;; has nothing here, where a place shared between calls would still
+         ;; hold what the load before it left.
+         (unwound-stderr nil)
+         (unwound-records nil))
     (setf *auto-discovered-asd* nil)
     (log-event :info "load-system" "system" system-name "force" force
                "clear_fasls" clear-fasls "timeout" timeout-seconds)
@@ -504,7 +563,8 @@ registering it."
                        (asdf:load-system system-name :force clear-fasls))
                      :on-unwind (lambda (stderr records)
                                   (setf unwound-stderr stderr
-                                        unwound-records records)))))
+                                        unwound-records records))
+                     :in-project in-project)))
              (handler-case (%do-load)
                (asdf/find-component:missing-component (c)
                  (let* ((missing (princ-to-string

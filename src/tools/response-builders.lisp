@@ -294,6 +294,10 @@ file is as its author wants it, and the worker is what is out of date.")
   "Places listed for one kind of style warning in load-system's text; the rest
 are counted.")
 
+(defparameter *load-outside-kinds-shown* 8
+  "Kinds of full warning from outside the project listed in load-system's text;
+the rest are counted.")
+
 (defun %load-warning-records (ht severity)
   "Return HT's warning records of SEVERITY, \"warning\" or \"style-warning\", as a
 list in the order they were signalled."
@@ -345,6 +349,71 @@ fails on, so none is summed up; *LOAD-FULL-WARNINGS-SHOWN* only bounds a flood."
 (defun %first-line (text)
   "Return TEXT up to its first newline."
   (subseq text 0 (or (position #\Newline text) (length text))))
+
+(defun %in-project-p (record)
+  "True unless RECORD, a load-system warning record, says it came from outside the
+project.  A record without \"in_project\" -- one nothing tells the origin of, or
+one made by hand -- counts as the project's: it is listed whole, as every
+warning was before, rather than hidden in the summary."
+  (multiple-value-bind (value presentp) (gethash "in_project" record)
+    (or (not presentp) (eq value t))))
+
+(defun %write-outside-warnings (stream records)
+  "Write RECORDS, full warnings from outside the project, to STREAM summed up by
+kind: how many there are of the kind, when more than one, and the first one's
+first line, marked as an example when the others read differently.  Nothing in
+them is the project's to fix, so none is listed whole; *LOAD-OUTSIDE-KINDS-SHOWN*
+kinds are written, the rest counted, and every record stays in warning_records."
+  (let ((kinds '()))
+    (dolist (record records)
+      (let ((entry (assoc (gethash "kind" record) kinds :test #'equal)))
+        (if entry
+            (setf (cdr entry) (append (cdr entry) (list record)))
+            (setf kinds (append kinds (list (list (gethash "kind" record) record)))))))
+    (format stream "~%  ~D from outside the project's files, by kind (all are in ~
+warning_records):"
+            (length records))
+    (loop for (nil . members) in kinds
+          for shown from 1 to *load-outside-kinds-shown*
+          do (let ((headlines (mapcar (lambda (record)
+                                        (%first-line (or (gethash "message" record) "")))
+                                      members)))
+               (format stream "~%    ~@[~Dx ~]~:[e.g. ~;~]~A"
+                       (and (rest members) (length members))
+                       (every (lambda (headline) (string= headline (first headlines)))
+                              headlines)
+                       (first headlines))))
+    (let ((hidden (- (length kinds) *load-outside-kinds-shown*)))
+      (when (plusp hidden)
+        (format stream "~%    ... and ~D more kind~:P" hidden)))))
+
+(defun %write-load-warnings (stream records)
+  "Write RECORDS, full warnings, to STREAM: the project's own whole and with their
+places (%WRITE-FULL-WARNINGS), then those from outside it summed up
+(%WRITE-OUTSIDE-WARNINGS).  A project's dependencies load first, so in the order
+signalled their warnings took every listed line and hid the project's."
+  (let ((own (remove-if-not #'%in-project-p records))
+        (outside (remove-if #'%in-project-p records)))
+    (when own
+      (%write-full-warnings stream own))
+    (when outside
+      (%write-outside-warnings stream outside))))
+
+(defun %project-variance-p (full details)
+  "True when the project has a package at variance with its DEFPACKAGE: one of
+FULL, the full warning records, from the project says so, or, for a result
+without records, DETAILS, the warning text, does.  A dependency at variance is
+left out: a dependency can be at variance on every fresh load too (two systems
+defining one package), where the hint would throw the worker away for nothing,
+and the load went on either way.  After an update that changed a dependency's
+exports a fresh worker would cure it, but the warning does not tell the two
+cases apart, and the hint is still given when a compile is refused for it."
+  (if full
+      (some (lambda (record)
+              (and (%in-project-p record)
+                   (search "also exports" (or (gethash "message" record) ""))))
+            full)
+      (and (stringp details) (search "also exports" details) t)))
 
 (defun %place-precedes-p (a b)
   "True when load-system warning record A is listed before B: by file, then by
@@ -415,7 +484,8 @@ key with a human-readable summary and returns the same HT.
 
 The warnings HT carries are written into the summary, since MCP clients render
 content[].text alone: every full warning whole and with its place, the style
-warnings summed up by kind (%WRITE-FULL-WARNINGS, %WRITE-STYLE-WARNINGS).  An
+warnings summed up by kind (%WRITE-LOAD-WARNINGS, %WRITE-STYLE-WARNINGS); a full
+warning from outside the project is summed up by kind too, after the project's.  An
 HT with warning_details but no warning_records -- one built by hand, or by a
 worker older than the records -- gets that text instead, cut at ~2KB.  When
 the load failed, the full warnings recorded before the failure are written the
@@ -466,7 +536,7 @@ or its primary system" system)))))))
                     ((or full style)
                      (when full
                        (format s "~%⚠ Warnings (~D):" (length full))
-                       (%write-full-warnings s full))
+                       (%write-load-warnings s full))
                      (when style
                        (format s "~%⚠ Style warnings (~D)~:[~;, by kind~]:"
                                (length style) (rest style))
@@ -484,7 +554,7 @@ or its primary system" system)))))))
                                                            (- (length wd) limit)))
                                       wd)))
                        (format s "~%⚠ ~A" (string-right-trim '(#\Newline) body)))))
-                  (when (and (stringp wd) (search "also exports" wd))
+                  (when (%project-variance-p full wd)
                     (format s "~%~%~A" *package-variance-hint*)))
                 (let ((same-second (gethash "same_second_fasls_deleted" ht)))
                   (when same-second
@@ -518,7 +588,7 @@ with a WARNING:"
                   (when others
                     (format s "~%~%~:[Warnings~;Other warnings~] before the error (~D):"
                             refusing (length others))
-                    (%write-full-warnings s others))
+                    (%write-load-warnings s others))
                   (when (and full style)
                     (format s "~%(and ~D style warning~:P, in warning_records)"
                             (length style)))

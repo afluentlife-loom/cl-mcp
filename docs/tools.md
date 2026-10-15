@@ -248,19 +248,24 @@ Input:
 - `timeout_seconds` (number, default `120`): timeout for the load operation; must be positive
 
 Output fields:
-- `content`: summary text. Every full warning is written whole, with its place
-  (`file:line (defun name)`). Style warnings are summed up by kind: how many there are and up
-  to three of them, in file and line order. A kind whose warnings all read the same is headed
-  by that first line and lists their places; one whose messages differ -- SBCL signals every
-  unused variable and every undefined function as one kind -- is headed `Nx of one kind:` and
+- `content`: summary text. Every full warning from the project's own files (`in_project`) is
+  written whole, with its place (`file:line (defun name)`). Those from outside them -- a
+  dependency's, which come first since dependencies load first -- follow, summed up by kind as
+  `Nx <first line>`, or `Nx e.g. <first line>` when the kind's messages differ (a kind of one
+  warning is written without `1x`); at most eight kinds are listed. Style warnings are summed
+  up by kind: how many there are and up to three of them, in file and line order. A kind
+  whose warnings all read the same is headed by that first line and lists their places; one
+  whose messages differ -- SBCL signals every unused variable and every undefined function as
+  one kind -- is headed `Nx of one kind:` and
   gives each listed warning its place and its own first line. At most eight kinds are listed
   and the rest counted. A load that failed on a compile ASDF refused gives as its cause the full warnings
   signalled while a file compiled (`fails_compile`) and says to fix them. A full warning
   signalled earlier, while another file loaded, is listed apart as `Other warnings before the
   error`; when the refused compile had no warning of its own (it failed on an error, which the
-  compiler output shows) no warning is blamed for it. A package at variance ("also exports")
-  that refused the compile, or any other error, adds a hint to get a fresh worker with
-  `pool-kill-worker`
+  compiler output shows) no warning is blamed for it; a warning a compile was refused for is
+  written whole wherever it comes from. A package at variance ("also exports") that refused
+  the compile, or one of the project's at variance on a load that went on, or any other
+  error, adds a hint to get a fresh worker with `pool-kill-worker`
 - `system` (string): echoed system name
 - `status` (string): `"loaded"`, `"timeout"`, or `"error"`. A full `WARNING` signalled while
   a file compiles (wrong argument count, duplicate definition, type conflict, package
@@ -292,6 +297,17 @@ Output fields:
     warning and from a full warning signalled at any other time: while a file loads, or when
     the compiler reports an undefined variable as the compilation unit ends (which has a
     `file` and `line` all the same)
+  - `in_project` (boolean): whether the warning came from the project's own files. The file
+    is the warning's place, or else the file loading when it was signalled (a dependency's
+    `.asd` or FASL, for one); a FASL stands for the source a registered system compiles
+    into it, wherever the FASL is cached. A source is the project's when it is a source or
+    `.asd` of the loaded system's project -- wherever that lies, so loading a library kept
+    in `.qlot/local-projects/` lists its own warnings -- or when it is under the project
+    root and the root's `.gitignore` does not leave it out: the rule the source scan of
+    `clgrep-search` and `code-find-references` follows, so a dependency qlot installs in
+    `.qlot/` is not the project's. Absent when nothing tells -- the warning names no file,
+    its FASL is compiled by no registered system, or the judgement fails -- and such a
+    warning is listed whole
   - `file`, `line`, `form` (for a warning the compiler has a place for: one signalled while a
     file compiles, or an undefined variable or function reported at the end): the source file, the
     line of the top-level form and the enclosing definition as the compiler names it, e.g.
