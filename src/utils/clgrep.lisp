@@ -3,7 +3,8 @@
 (defpackage #:cl-mcp/src/utils/clgrep
   (:use #:cl)
   (:import-from #:cl-ppcre
-                #:scan)
+                #:scan
+                #:create-scanner)
   (:export #:main
            #:grep-file
            #:extract-toplevel-form
@@ -13,6 +14,7 @@
            #:collect-target-files
            #:target-file-p
            #:path-ignored-p
+           #:root-ignore-patterns
            #:glob-to-regex
            #:semantic-grep
            #:scan-toplevel-forms
@@ -238,61 +240,58 @@ lines it swallowed still belong to a form."
     nil))
 
 (defun glob-to-regex (pattern)
-  "Convert a gitignore glob PATTERN to a regular expression string.
-   Handles *, ?, **, and basic glob syntax."
-  (let ((result (make-array 0 :element-type 'character :fill-pointer 0 :adjustable t))
-        (i 0)
-        (len (length pattern)))
-
-    ;; Anchor to start if pattern starts with /
-    (when (and (> len 0) (char= (char pattern 0) #\/))
-      (vector-push-extend #\^ result)
-      (incf i))
-
-    (loop while (< i len)
-          do (let ((char (char pattern i)))
-               (cond
-                 ;; Handle **/ for matching any directory depth
-                 ((and (< (+ i 2) len)
-                       (char= char #\*)
-                       (char= (char pattern (+ i 1)) #\*)
-                       (char= (char pattern (+ i 2)) #\/))
-                  (loop for c across "(?:.*/|)" do (vector-push-extend c result))
-                  (incf i 3))
-
-                 ;; Handle /** at end for matching directory and contents
-                 ((and (< (+ i 1) len)
-                       (char= char #\*)
-                       (char= (char pattern (+ i 1)) #\*)
-                       (= (+ i 2) len))
-                  (loop for c across ".*" do (vector-push-extend c result))
-                  (incf i 2))
-
-                 ;; Handle single * (match anything except /)
-                 ((char= char #\*)
-                  (loop for c across "[^/]*" do (vector-push-extend c result))
-                  (incf i))
-
-                 ;; Handle ? (match single char except /)
-                 ((char= char #\?)
-                  (loop for c across "[^/]" do (vector-push-extend c result))
-                  (incf i))
-
-                 ;; Escape special regex characters
-                 ((find char ".+^$(){}[]|\\")
-                  (vector-push-extend #\\ result)
-                  (vector-push-extend char result)
-                  (incf i))
-
-                 ;; Regular characters
-                 (t
-                  (vector-push-extend char result)
-                  (incf i)))))
-
-    ;; If pattern ends with /, match directory and its contents
-    (when (and (> len 0) (char= (char pattern (1- len)) #\/))
-      (loop for c across ".*" do (vector-push-extend c result)))
-
+  "Convert a gitignore glob PATTERN to a regular expression string, matched with
+SCAN against a path relative to the root.  Handles *, ?, ** and basic glob syntax.
+As git does, the pattern matches whole path components: a slash at its start or
+in its middle anchors it to the root, otherwise it matches at any depth, and a
+trailing slash matches a directory and what is in it.  Matching the bare text
+anywhere would leave out src/catalog.lisp for the pattern log."
+  (let* ((len (length pattern))
+         (directory-p (and (> len 0) (char= (char pattern (1- len)) #\/)))
+         (body (string-left-trim "/" (if directory-p (subseq pattern 0 (1- len)) pattern)))
+         (anchored-p (or (and (> len 0) (char= (char pattern 0) #\/))
+                         (find #\/ body)))
+         (result (make-array 0 :element-type 'character :fill-pointer 0 :adjustable t))
+         (i 0)
+         (body-len (length body)))
+    (flet ((emit (string)
+             (loop for c across string do (vector-push-extend c result))))
+      (emit (if anchored-p "^" "(?:^|/)"))
+      (loop while (< i body-len)
+            do (let ((char (char body i)))
+                 (cond
+                   ;; **/ matches any directory depth, none included
+                   ((and (< (+ i 2) body-len)
+                         (char= char #\*)
+                         (char= (char body (+ i 1)) #\*)
+                         (char= (char body (+ i 2)) #\/))
+                    (emit "(?:.*/|)")
+                    (incf i 3))
+                   ;; /** at the end matches everything under the directory
+                   ((and (< (+ i 1) body-len)
+                         (char= char #\*)
+                         (char= (char body (+ i 1)) #\*)
+                         (= (+ i 2) body-len))
+                    (emit ".*")
+                    (incf i 2))
+                   ;; A single * matches anything except /
+                   ((char= char #\*)
+                    (emit "[^/]*")
+                    (incf i))
+                   ;; ? matches a single character except /
+                   ((char= char #\?)
+                    (emit "[^/]")
+                    (incf i))
+                   ;; Regex special characters are escaped
+                   ((find char ".+^$(){}[]|\\")
+                    (vector-push-extend #\\ result)
+                    (vector-push-extend char result)
+                    (incf i))
+                   (t
+                    (vector-push-extend char result)
+                    (incf i)))))
+      ;; The last component ends where the path or a component does.
+      (emit (if directory-p "/" "(?:/|$)")))
     result))
 
 (defun parse-gitignore (gitignore-path)
@@ -318,6 +317,15 @@ lines it swallowed still belong to a form."
         (return-from path-ignored-p t)))
     nil))
 
+(defun root-ignore-patterns (root-dir)
+  "Return the patterns that leave a path under ROOT-DIR out of the project: its
+.gitignore's, and .git/.  Matched with PATH-IGNORED-P.
+Compiled here, once: given as strings, CL-PPCRE:SCAN compiles each again for
+every entry of the walk, which took seconds over a large project's tree."
+  (mapcar #'create-scanner
+          (cons (glob-to-regex ".git/")
+                (parse-gitignore (merge-pathnames ".gitignore" root-dir)))))
+
 (defun target-file-p (pathname)
   "Check if PATHNAME has a target extension (.lisp, .asd, or .ros)."
   (let ((type (pathname-type pathname)))
@@ -338,10 +346,7 @@ lines it swallowed still belong to a form."
             nil)))
     ;; Directory case
     (let* ((root-dir (uiop:ensure-directory-pathname root-path))
-           (gitignore-path (merge-pathnames ".gitignore" root-dir))
-           (ignore-patterns (parse-gitignore gitignore-path))
-           (git-pattern (glob-to-regex ".git/"))
-           (all-patterns (cons git-pattern ignore-patterns))
+           (all-patterns (root-ignore-patterns root-dir))
            (result nil))
       (if recursive
           (labels ((collect-from-dir (dir)

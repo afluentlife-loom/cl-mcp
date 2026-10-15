@@ -184,7 +184,9 @@ For plain text search without loading anything, use 'clgrep-search'."
                   :description "Optional package used when SYMBOL is unqualified")
          (project-only :type :boolean :json-name "project_only" :default t
                        :description
-                       "When true (default), only include references under the project root")
+                       "When true (default), only include references in the project's own
+files: under the project root and not left out by its .gitignore, as the source scan
+decides, so a dependency vendored in .qlot/ is not included")
          (limit :type :integer
                 :description
                 "Maximum number of forms listed (default 50); the total is always reported"))

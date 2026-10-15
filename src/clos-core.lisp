@@ -17,10 +17,8 @@
                 #:qualified-symbol-name
                 #:symbol-kind
                 #:%status-string)
-  (:import-from #:cl-mcp/src/project-root
-                #:*project-root*)
-  (:import-from #:cl-mcp/src/utils/paths
-                #:path-inside-p)
+  (:import-from #:cl-mcp/src/utils/project-files
+                #:project-file-predicate)
   (:import-from #:cl-mcp/src/tools/helpers
                 #:make-ht
                 #:json-bool)
@@ -276,18 +274,17 @@ degrading to NIL instead of failing the report."
   (let ((find (%introspect "FIND-DEFINITION-SOURCE")))
     (and find (ignore-errors (funcall find method)))))
 
-(defun %source-sort-key (source)
+(defun %source-sort-key (source own-p)
   "Return (PLACE NAMESTRING FORM-NUMBER) ordering SOURCE without reading its
-file: PLACE is 0 inside the project root, 1 elsewhere, 2 without a file."
+file: PLACE is 0 in a project file (OWN-P, a PROJECT-FILE-PREDICATE), 1 elsewhere
+-- a dependency vendored under the root among them -- and 2 without a file."
   (let* ((path-fn (%introspect "DEFINITION-SOURCE-PATHNAME"))
          (form-path-fn (%introspect "DEFINITION-SOURCE-FORM-PATH"))
          (pathname (and source path-fn (ignore-errors (funcall path-fn source))))
          (form-path (and source form-path-fn (ignore-errors (funcall form-path-fn source))))
          (absolute (and pathname (ignore-errors (uiop:absolute-pathname-p pathname)))))
     (list (cond ((null absolute) 2)
-                ((and *project-root*
-                      (ignore-errors (path-inside-p pathname *project-root*)))
-                 0)
+                ((ignore-errors (funcall own-p pathname)) 0)
                 (t 1))
           (if pathname (namestring pathname) "")
           (if (and (consp form-path) (integerp (first form-path)))
@@ -381,13 +378,15 @@ was found through that class's specialized methods."
 (defun %sorted-methods (methods standard-p)
   "Return METHODS ordered for display: by role when STANDARD-P, then project
 files, other files and no file, then by file and top-level form."
-  (mapcar #'car
-          (stable-sort (mapcar (lambda (method)
-                                 (cons method
-                                       (cons (if standard-p (%role-rank method) 0)
-                                             (%source-sort-key (%method-source method)))))
-                               methods)
-                       #'%key< :key #'cdr)))
+  (let ((own-p (project-file-predicate)))
+    (mapcar #'car
+            (stable-sort (mapcar (lambda (method)
+                                   (cons method
+                                         (cons (if standard-p (%role-rank method) 0)
+                                               (%source-sort-key (%method-source method)
+                                                                 own-p))))
+                                 methods)
+                         #'%key< :key #'cdr))))
 
 (defun %generic-function-entry (gf limit)
   "Return the JSON object for GF with at most LIMIT of its methods.  Methods are

@@ -625,7 +625,9 @@ before that function, as an edit made after the file was loaded would."
 (defun %stale-refs-report (file)
   "Return the placed code-find-references report for the fixture's target,
 scanning FILE's directory."
-  (let ((*project-root* (asdf:system-source-directory :cl-mcp))
+  ;; Rooted at FILE's directory: under cl-mcp's root, tests/tmp/ is ignored, so
+  ;; the fixture would not be the project's and project_only would drop it.
+  (let ((*project-root* (uiop:pathname-directory-pathname file))
         (designator "cl-mcp-refs-stale-fixture::stale-target"))
     (place-references-in-source
      (code-find-references-report

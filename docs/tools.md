@@ -316,8 +316,10 @@ Output fields:
   of the project's tree deleted because their source was written in the same second as them —
   ASDF's one-second timestamps would have reused them, running the code from before the edit.
   A count of deletions, not of compilations: a file this load reaches is compiled from source,
-  one in a sibling subsystem it never reaches only when something loads it. The text says
-  `Deleted N FASLs whose source was written in the same second`
+  one in a sibling subsystem it never reaches only when something loads it. The project's
+  tree leaves out what the root's `.gitignore` does, such as `.qlot/`, unless the system
+  itself is kept there. The text says `Deleted N FASLs whose source was written in the same
+  second`
 - `message` (string|null): error or timeout message
 
 Solves three problems with using `ql:quickload` via `repl-eval`:
@@ -1049,7 +1051,9 @@ them, and the tests involved — to judge what a change would affect. Combines S
 Input:
 - `symbol` (string, required): `pkg:name`, `pkg::name` or `name`; a single colon also finds internal symbols
 - `package` (string, optional): package used when `symbol` is unqualified
-- `project_only` (boolean, default `true`): limit xref results to files under the project root
+- `project_only` (boolean, default `true`): limit xref results to the project's own files:
+  under the project root and not left out by its `.gitignore` or `.git/`, the rule the source
+  scan follows. A dependency qlot installs in the root's `.qlot/` is not the project's
 - `limit` (integer, default `50`): most forms listed; `count` always gives the total
 
 Output (the content text carries everything that matters for a decision):
@@ -1225,8 +1229,9 @@ exactly when `form_type`/`form_name` carry values: an entry with no edit informa
 them `null`) never carries one.
 
 Order: a generic function's methods run `:around`, `:before`, primary, `:after` for the standard
-method combination, project files before other files; a class's methods follow its precedence
-list, then the generic function's name.
+method combination, project files before other files -- a project file being one under the
+project root that its `.gitignore` does not leave out, so a dependency in `.qlot/` counts as
+another file; a class's methods follow its precedence list, then the generic function's name.
 
 Reads only: a class is never finalized — an unfinalized class's precedence list is computed and
 its effective slots merged from the direct slots the standard way, with a note — no initform is
