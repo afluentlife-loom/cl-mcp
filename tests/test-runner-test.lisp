@@ -911,6 +911,19 @@ everything again."
        (ok (not (search "broken package state" reason)))
        (ok (not (search "pool-kill-worker" reason)))))))
 
+(deftest run-tests-counts-a-refused-compile-as-asdf-does
+  ;; On the run thread the worker gives it, as %HANDLE-RUN-TESTS does: there
+  ;; ASDF's compilation unit is the only one, and it counts the refusal once.
+  (%call-with-warning-test-system
+   "(defun helper () 1)
+(defun helper () 2)"
+   (lambda (system)
+     (let ((reason (%first-failure-reason
+                    (cl-mcp/src/test-runner-core:call-with-test-run-deadline
+                     (lambda () (run-tests system)) 60))))
+       (ok (search "caught 1 fatal ERROR condition" reason))
+       (ok (null (search "caught 2 fatal ERROR conditions" reason)))))))
+
 (deftest load-failure-hint-for-package-variance-is-a-fresh-worker
   ;; The one warning a fresh worker cures: the file is as its author wants it,
   ;; and the worker still exports what the file no longer declares.

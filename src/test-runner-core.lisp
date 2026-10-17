@@ -14,6 +14,8 @@
                 #:discover-asd-in-project)
   (:import-from #:cl-mcp/src/utils/fasls
                 #:delete-same-second-fasls)
+  (:import-from #:cl-mcp/src/utils/compilation-unit
+                #:call-with-own-compilation-unit)
   ;; The warning records load-system reports, so a load refused for a
   ;; warning names it and its place the same way here.
   (:import-from #:cl-mcp/src/warning-records
@@ -953,11 +955,12 @@ failure the tail of the captured output is included in the error
 message. Two complementary capture paths are used:
   1. HANDLER-BIND on WARNING collects individual warning conditions as
      they fire.
-  2. The ASDF:LOAD-SYSTEM call runs inside WITH-COMPILATION-UNIT
-     :OVERRIDE T with *ERROR-OUTPUT* bound to a string stream, so
-     SBCL's compilation-unit summary (which enumerates caught fatal
-     errors and non-fatal warnings) fires into our capture before
-     exiting the scope.
+  2. The ASDF:LOAD-SYSTEM call runs with *ERROR-OUTPUT* bound to a
+     string stream, inside a compilation unit that ends within that
+     binding (CALL-WITH-OWN-COMPILATION-UNIT), so SBCL's
+     compilation-unit summary (which enumerates caught fatal errors and
+     non-fatal warnings) fires into our capture before exiting the
+     scope.
 Package-variance warnings and 'caught N ERROR condition' summaries
 surface to the caller instead of being swallowed into an opaque
 COMPILE-FILE-ERROR."
@@ -1021,8 +1024,8 @@ COMPILE-FILE-ERROR."
                 (when asd-src
                   (ignore-errors (asdf:load-asd asd-src)))))
             (let ((*error-output* captured-stderr))
-              (with-compilation-unit (:override t)
-                (asdf:load-system system-name)))))
+              (call-with-own-compilation-unit
+               (lambda () (asdf:load-system system-name))))))
       (error (c)
         (let* ((warnings-text (get-output-stream-string captured-warnings))
                (stderr-text (get-output-stream-string captured-stderr))

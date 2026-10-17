@@ -22,6 +22,8 @@
   (:import-from #:cl-mcp/src/utils/fasls
                 #:fasl-source-directory
                 #:delete-same-second-fasls)
+  (:import-from #:cl-mcp/src/utils/compilation-unit
+                #:call-with-own-compilation-unit)
   (:import-from #:cl-mcp/src/warning-records
                 #:%redefinition-warning-p
                 #:%make-warning-record
@@ -198,10 +200,8 @@ later load agree -- where ASDF by itself, and run-tests, refuse the file."
                                (*query-io* interactive))
                           (if syms
                               (progv (nreverse syms) (nreverse vals)
-                                (with-compilation-unit (:override t)
-                                  (funcall thunk)))
-                              (with-compilation-unit (:override t)
-                                (funcall thunk))))))
+                                (call-with-own-compilation-unit thunk))
+                              (call-with-own-compilation-unit thunk)))))
                 (setf completed-p t)
                 (let ((tables (finished-records)))
                   (values result
