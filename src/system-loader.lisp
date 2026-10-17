@@ -55,24 +55,30 @@ own full warnings are listed first; those from outside its files (in_project
 false: a dependency's, which come first as it loads first) are summed up by
 kind after them.  STYLE-WARNINGs (unused variable, undefined function) never
 fail a load: they are counted and summed up by kind.
+
 A wrong argument count is checked against what the compiler knows of the
-callee at the call, so whether and how it is reported varies: to a function
-defined in another file it is usually only a STYLE-WARNING; to one defined
-later while the worker holds no definition of it yet, or to one declaimed
-notinline (as UIOP's and ASDF's functions are), it is not checked at all; and
-when a reload recompiles the file, the call is checked against the definition
-the worker already holds, not the one in the file.  A load that succeeds is no
-proof that every call has the right number of arguments.
+callee at the call, so whether and how it is reported varies.  To a function
+defined in another file it is usually only a STYLE-WARNING.  To one defined
+later -- in the same file or a file loaded after it -- while the worker holds
+no definition of it and nothing has declaimed its type, or to one declaimed
+notinline (as most of UIOP's and ASDF's functions are), it is not checked at
+all.  When a reload recompiles the file, a call to a function defined later is
+checked against the definition the worker already holds, not the one in the
+file; a call to one defun'd earlier in the same file is checked against the
+file's.  A load that succeeds is no proof that every call has the right number
+of arguments.
 
 SBCL 'redefining X in DEFUN' notifications are dropped, on a first load and a
 reload alike: redefining is ordinary Common Lisp development, and a reload
 exists to do it.  That includes one file replacing another file's definition
 (a name taken in with :import-from and then defined again, say): plain
-asdf:load-system reports it as 'redefining', and this tool does not.  Every
-warning kept is in the JSON warning_records, with its severity, class and message, fails_compile when it is a full warning
-signalled while a file compiled, in_project, and, where the compiler has a
-place for it, file, line and form: the enclosing definition as the compiler
-names it, such as (defun wrong-arity).
+asdf:load-system reports it as 'redefining', and this tool does not.
+
+Every warning kept is in the JSON warning_records, with its severity, class
+and message, fails_compile when it is a full warning signalled while a file
+compiled, in_project, and, where the compiler has a place for it, file, line
+and form: the enclosing definition as the compiler names it, such as
+(defun wrong-arity).
 form says where the warning is; it is not an argument for lisp-edit-form.  For
 a top-level defun, defmacro or defclass the two read alike, but a method is
 named by its specializers alone, (defmethod area (circle)), and a definition
