@@ -241,10 +241,16 @@ remove everything again."
            (funcall thunk system file))
       (asdf:clear-system system)
       (ignore-errors (delete-package package-name))
-      (uiop:delete-directory-tree root :validate t :if-does-not-exist :ignore)
-      ;; ASDF's FASLs of it, in its output-translation cache.
-      (uiop:delete-directory-tree (asdf:apply-output-translations root)
-                                  :validate t :if-does-not-exist :ignore))))
+      ;; Both paths are computed, so each deletion checks it is the fixture's.
+      (flet ((fixture-dir-p (path)
+               (search "clmcp-repl-warn-" (namestring path))))
+        (uiop:delete-directory-tree root :validate #'fixture-dir-p
+                                         :if-does-not-exist :ignore)
+        ;; ASDF's FASLs of it, in its output-translation cache.
+        (ignore-errors
+         (uiop:delete-directory-tree (asdf:apply-output-translations root)
+                                     :validate #'fixture-dir-p
+                                     :if-does-not-exist :ignore))))))
 
 (deftest repl-eval-asdf-load-system-refuses-a-full-warning
   ;; compile-file's failure flag is what ASDF fails a build on, and a full
