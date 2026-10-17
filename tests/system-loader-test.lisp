@@ -472,8 +472,13 @@ list, and the warning records."
            (ok (equal "warning" (gethash "severity" (first records))))
            (ok (not (marked-p (first records))))))
        (testing "an undefined variable, reported when the unit ends"
+         ;; In a unit of its own, as ASDF's plan compiles every file: alone,
+         ;; COMPILE-FILE is the outermost unit and reports the variable
+         ;; before it returns.
          (multiple-value-bind (values records)
-             (%suppressed (lambda () (compile-file (funcall path "deferred.lisp"))))
+             (%suppressed (lambda ()
+                            (with-compilation-unit ()
+                              (compile-file (funcall path "deferred.lisp")))))
            (ok (null (third values)) "the compile is reported as clean")
            (ok (equal "warning" (gethash "severity" (first records))))
            (ok (search "deferred.lisp" (gethash "file" (first records)))
@@ -842,6 +847,55 @@ present and false, not merely missing."
                        :key (lambda (r) (gethash "message" r)) :test #'search)))
        (ok own)
        (ok (and own (eq t (gethash "in_project" own))))))))
+
+(deftest load-system-counts-a-refused-compile-as-asdf-does
+  ;; ASDF's own compilation unit counts the refusal as one aborted unit.  A
+  ;; second unit around it counted it again, and the compiler output said
+  ;; "caught 2 fatal ERROR conditions" for a file that had one warning.
+  (%call-with-warning-system
+   "(defun twice () 1)
+(defun twice () 2)"
+   (lambda (system forget)
+     (declare (ignore forget))
+     (let* ((ht (load-system system :force nil))
+            (output (gethash "compiler_output" ht)))
+       (ok (equal "error" (gethash "status" ht)))
+       (ok (search "caught 1 fatal ERROR condition" output))
+       (ok (null (search "caught 2 fatal ERROR conditions" output)))))))
+
+(deftest an-own-compilation-unit-reports-before-it-returns-inside-an-outer-one
+  ;; Inside a unit someone else opened, the end-of-unit report -- here an
+  ;; undefined variable -- would wait for that unit to end, past the caller's
+  ;; handlers and output capture.  Outside one, no unit is added.
+  (%call-with-probe-files
+   '(("deferred.lisp" . "(in-package #:clmcp-warn-probe)
+(defun reads-undefined () (list *clmcp-warn-never-defined*))
+"))
+   (lambda (path)
+     (flet ((reported-within-p ()
+              (let ((reported nil))
+                (handler-bind ((warning
+                                 (lambda (w)
+                                   (when (search "CLMCP-WARN-NEVER-DEFINED"
+                                                 (princ-to-string w))
+                                     (setf reported t))
+                                   (muffle-warning w))))
+                  (cl-mcp/src/utils/compilation-unit:call-with-own-compilation-unit
+                   (lambda ()
+                     (with-compilation-unit ()
+                       (let ((*error-output* (make-broadcast-stream)))
+                         (compile-file (funcall path "deferred.lisp")))))))
+                reported)))
+       (ok (with-compilation-unit () (reported-within-p))
+           "inside an outer unit, reported before the call returns")
+       (ok (bt:join-thread (bt:make-thread #'reported-within-p))
+           "on a thread with no unit open, ASDF's own unit is the outermost")
+       (ok (not (bt:join-thread
+                 (bt:make-thread
+                  (lambda ()
+                    (cl-mcp/src/utils/compilation-unit:call-with-own-compilation-unit
+                     #'cl-mcp/src/utils/compilation-unit::%in-compilation-unit-p)))))
+           "and there no unit is added")))))
 
 (deftest a-load-that-never-started-reports-nothing-of-the-load-before-it
   ;; What a failed load had recorded was kept where the next call could read
