@@ -241,7 +241,10 @@ remove everything again."
            (funcall thunk system file))
       (asdf:clear-system system)
       (ignore-errors (delete-package package-name))
-      (uiop:delete-directory-tree root :validate t :if-does-not-exist :ignore))))
+      (uiop:delete-directory-tree root :validate t :if-does-not-exist :ignore)
+      ;; ASDF's FASLs of it, in its output-translation cache.
+      (uiop:delete-directory-tree (asdf:apply-output-translations root)
+                                  :validate t :if-does-not-exist :ignore))))
 
 (deftest repl-eval-asdf-load-system-refuses-a-full-warning
   ;; compile-file's failure flag is what ASDF fails a build on, and a full
@@ -252,8 +255,13 @@ remove everything again."
 (defun wrong-arity () (two-arguments 1 2 3))"
    (lambda (system file)
      (testing "compile-file reports the compile as failed"
-       (ok (equal "t" (repl-eval (format nil "(nth-value 2 (compile-file ~S))"
-                                         (namestring file))))))
+       ;; Under a name of its own: a body.fasl beside the source would be the
+       ;; one ASDF loads when output translations are disabled.
+       (ok (equal "t" (repl-eval (format nil "(nth-value 2 (compile-file ~S :output-file ~S))"
+                                         (namestring file)
+                                         (namestring (make-pathname :name "direct"
+                                                                    :type "fasl"
+                                                                    :defaults file)))))))
      (testing "asdf:load-system fails with ASDF's own error"
        (multiple-value-bind (printed value stdout stderr error-context)
            ;; No :force: under rove's test-op this is a nested OPERATE, which
