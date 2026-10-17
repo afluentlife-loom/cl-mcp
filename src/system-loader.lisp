@@ -44,18 +44,24 @@ that FASL is deleted first, and the file is recompiled when this load reaches
 it (same_second_fasls_deleted counts the deletions).  clear_fasls=true is the
 guaranteed rebuild, of every file.
 
-Warning handling: a file that compiles with a full WARNING (wrong argument
-count, duplicate definition, type conflict, package variance) fails the load,
-exactly as it does under asdf:load-system and run-tests; the error gives that
-warning and its place as the cause, apart from any warning that only came
-before it.  A full warning signalled outside a compilation (while
-a file loads, or an undefined variable reported at the end) is listed and the
-load goes on.  The project's own full warnings are listed first; those from
-outside its files (in_project false: a dependency's, which come first as it
-loads first) are summed up by kind after them.  STYLE-WARNINGs (unused
-variable, undefined function) never fail a load: they are counted and summed
-up by kind.  SBCL 'redefining X in DEFUN' notifications are dropped, on a first
-load and a reload alike: redefining is ordinary Common Lisp development, and a
+Warning handling: a file that compiles with a full WARNING (a wrong argument
+count to a function defined earlier in the same file, duplicate definition, type
+conflict, package variance) fails the load, exactly as it does under
+asdf:load-system and run-tests; the error gives that warning and its place as
+the cause, apart from any warning that only came before it.  A full warning
+signalled outside a compilation (while a file loads, or an undefined variable
+reported at the end) is listed and the load goes on.  The project's own full
+warnings are listed first; those from outside its files (in_project false: a
+dependency's, which come first as it loads first) are summed up by kind after
+them.  STYLE-WARNINGs (unused variable, undefined function, a wrong argument
+count to a function defined in another file) never fail a load: they are
+counted and summed up by kind.  A wrong argument count to a function defined
+later in the same file is not reported at all, so a load that succeeds is no
+proof that every call has the right number of arguments.  SBCL 'redefining X
+in DEFUN' notifications are dropped, on a first load and a reload alike,
+including one file replacing another file's definition (a name taken in with
+:import-from and then defined again, say), which plain asdf:load-system
+reports as 'redefining': redefining is ordinary Common Lisp development, and a
 reload exists to do it.  Every warning kept is in the JSON warning_records,
 with its severity, class and message, fails_compile when it is a full warning
 signalled while a file compiled, in_project, and, where the compiler has a
