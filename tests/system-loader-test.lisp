@@ -204,17 +204,17 @@
 
 (deftest suppress-redefinition-warning-predicate
   (testing "%redefinition-warning-p recognizes the printed SBCL shape"
-    (ok (cl-mcp/src/system-loader-core::%redefinition-warning-p
+    (ok (cl-mcp/src/warning-records::%redefinition-warning-p
          (make-condition 'simple-warning
                          :format-control "redefining FOO in DEFUN")))
-    (ok (not (cl-mcp/src/system-loader-core::%redefinition-warning-p
+    (ok (not (cl-mcp/src/warning-records::%redefinition-warning-p
               (make-condition 'simple-warning
                               :format-control "variable X unused")))))
   (testing "textual fallback requires ' in ' to avoid false positives"
-    (ok (not (cl-mcp/src/system-loader-core::%redefinition-warning-p
+    (ok (not (cl-mcp/src/warning-records::%redefinition-warning-p
               (make-condition 'simple-warning
                               :format-control "redefining makes no sense"))))
-    (ok (not (cl-mcp/src/system-loader-core::%redefinition-warning-p
+    (ok (not (cl-mcp/src/warning-records::%redefinition-warning-p
               (make-condition 'simple-warning
                               :format-control "not a redefining at all")))))
   #+sbcl
@@ -231,7 +231,7 @@
         (let ((hit (find-if (lambda (w) (typep w cls)) captured)))
           (ok hit "handler-bind captured a sb-kernel:redefinition-warning")
           (when hit
-            (ok (cl-mcp/src/system-loader-core::%redefinition-warning-p hit)
+            (ok (cl-mcp/src/warning-records::%redefinition-warning-p hit)
                 "primary typep branch of %redefinition-warning-p matches")))))))
 
 (deftest suppress-redefinition-warning-filter-behavior
@@ -801,8 +801,8 @@ present and false, not merely missing."
 (deftest load-system-leaves-a-warning-naming-no-file-unjudged
   ;; Nothing tells whose a warning signalled outside any file is, so it is
   ;; listed whole rather than summed up as a dependency's.
-  (let* ((in-project (cl-mcp/src/system-loader-core::%in-project-predicate "no-such-system"))
-         (tables (cl-mcp/src/system-loader-core::%warning-record-tables
+  (let* ((in-project (cl-mcp/src/warning-records::%in-project-predicate "no-such-system"))
+         (tables (cl-mcp/src/warning-records::%warning-record-tables
                   (list (list :severity "warning" :class "SIMPLE-WARNING"
                               :message "from nowhere" :kind-key '(simple-warning)))
                   :in-project in-project)))
@@ -823,7 +823,7 @@ present and false, not merely missing."
               (let ((in-project
                       (let ((cl-mcp/src/project-root:*project-root*
                               (truename (funcall path ""))))
-                        (cl-mcp/src/system-loader-core::%in-project-predicate
+                        (cl-mcp/src/warning-records::%in-project-predicate
                          "clmcp-asd-probe"))))
                 (ok (eq t (funcall in-project (list :loading asd))))))
          (asdf:clear-system "clmcp-asd-probe"))))))

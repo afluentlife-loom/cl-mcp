@@ -507,10 +507,11 @@ send the caller to replace a worker that is fine."))
 
 (define-condition test-system-compile-failed (simple-error)
   ((records :initarg :records :initform '() :reader test-system-compile-failed-records))
-  (:documentation "ASDF refused a file of the test system that compiled with a
-full WARNING.  RECORDS are those warnings as load-system's warning records
-(%WARNING-RECORD-TABLES), each with its place.  Its own type, so the load
-failure sends the caller to the file rather than to a fresh worker."))
+  (:documentation "ASDF refused a file of the test system because it did not
+compile: an error, or a full WARNING.  RECORDS are those warnings as
+load-system's warning records (%WARNING-RECORD-TABLES), each with its place,
+and empty when only an error failed it.  Its own type, so the load failure sends
+the caller to the file rather than to a fresh worker."))
 
 (defun %format-load-error (system-name condition stderr)
   "Format a test-system load-failure message.
@@ -580,16 +581,19 @@ them."
                                records))
                    (format nil "~A~%~%Hint: package-variance warnings mean the running ~
                                 image has stale exports. Use pool-kill-worker to get a ~
-                                fresh worker, then retry run-tests."
+                                fresh worker, then retry run-tests. If they come back ~
+                                on a fresh worker, two definitions of the package ~
+                                disagree: make them agree."
                            text))
                   ;; The warning is the cause, and a fresh worker would meet it
                   ;; again -- unless it is about what this worker holds.
                   (records
                    (format nil "~A~%~%Hint: fix the warning~P ASDF refused the file ~
-                                for, listed under Warnings below, and run the tests ~
-                                again. A warning about a definition this worker ~
-                                already holds -- a structure's layout, say -- needs a ~
-                                fresh worker instead: pool-kill-worker, then run-tests."
+                                for, listed under Warnings below, and any error in the ~
+                                compiler output above, and run the tests again. A ~
+                                warning about a definition this worker already holds ~
+                                -- a structure's layout, say -- needs a fresh worker ~
+                                instead: pool-kill-worker, then run-tests."
                            text (length records)))
                   ;; FiveAM's own error for a def-suite :in a suite not defined
                   ;; yet: a load-order mistake in the project, not a broken worker.
@@ -600,6 +604,12 @@ them."
                                 package of PARENT's file>) to the defpackage of the file ~
                                 with the :in; otherwise put PARENT's file earlier in the ~
                                 .asd's components."
+                           text))
+                  ;; An error failed the compile, and nothing is wrong with the
+                  ;; worker: a fresh one would meet the same file.
+                  ((typep condition 'test-system-compile-failed)
+                   (format nil "~A~%~%Hint: the file did not compile; the compiler ~
+                                output above says why. Fix it and run the tests again."
                            text))
                   (t
                    (format nil "~A~%~%Hint: the worker process may have a broken ~
@@ -1025,16 +1035,17 @@ COMPILE-FILE-ERROR."
                     :format-control "~A"
                     :format-arguments
                     (list (%format-load-error system-name c combined))))
-            ;; A file refused for a warning: the warning is the cause, and
-            ;; its records say where it is.
-            ((and (typep c 'uiop:compile-file-error) refusing)
+            ;; A file that did not compile: the file is the cause.  When it
+            ;; was refused for a warning, the records say where that is.
+            ((typep c 'uiop:compile-file-error)
              (error 'test-system-compile-failed
                     :format-control "~A"
                     :format-arguments
                     (list (%format-load-error system-name c combined))
-                    :records (%warning-record-tables
-                              (reverse refusing)
-                              :in-project (%in-project-predicate system-name))))
+                    :records (and refusing
+                                  (%warning-record-tables
+                                   (reverse refusing)
+                                   :in-project (%in-project-predicate system-name)))))
             (t
              (error "~A"
                     (%format-load-error system-name c combined)))))))))

@@ -819,8 +819,8 @@
                  (when first
                    (ok (string= "SYSTEM-LOAD" (gethash "test_name" first))
                        "synthetic test_name is SYSTEM-LOAD")
-                   (ok (search "pool-kill-worker" (gethash "reason" first))
-                       "reason carries the recovery hint")
+                   (ok (search "did not compile" (gethash "reason" first))
+                       "reason carries the recovery hint: the file is to fix")
                    (ok (search system-name (gethash "description" first))
                        "description names the offending system")))))
         (ignore-errors (asdf:clear-system system-name))
@@ -895,6 +895,21 @@ everything again."
          (ok (search "ASDF refuses a file that compiles with a WARNING" text))
          (ok (search "dup.lisp:" text))
          (ok (search "(defun helper)" text)))))))
+
+(deftest run-tests-load-failure-from-a-compile-error-sends-the-caller-to-the-file
+  ;; A file the compiler cannot read fails to compile without any warning to
+  ;; record.  The worker is still fine and the file still has to change.
+  (%call-with-warning-test-system
+   "(defun helper ( 1)"
+   (lambda (system)
+     (let* ((result (run-tests system))
+            (reason (%first-failure-reason result)))
+       (ok (equal "load-error" (gethash "framework" result)))
+       (ok (null (gethash "warning_records" result)) "no warning to record")
+       (ok (search "did not compile" reason))
+       (ok (search "READ error" reason) "the compiler output the hint points to says why")
+       (ok (not (search "broken package state" reason)))
+       (ok (not (search "pool-kill-worker" reason)))))))
 
 (deftest load-failure-hint-for-package-variance-is-a-fresh-worker
   ;; The one warning a fresh worker cures: the file is as its author wants it,
