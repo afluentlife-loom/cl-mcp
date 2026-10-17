@@ -276,21 +276,34 @@ Output fields:
   error, adds a hint to get a fresh worker with `pool-kill-worker`
 - `system` (string): echoed system name
 - `status` (string): `"loaded"`, `"timeout"`, or `"error"`. A full `WARNING` signalled while
-  a file compiles (wrong argument count, duplicate definition, type conflict, package
-  variance) makes it `"error"`, as it makes `asdf:load-system` and `run-tests` fail: ASDF
-  refuses the file and keeps no FASL of it. (`ql:quickload` muffles such a warning, so a
-  system that has only ever been quickloaded can fail here until the warning is fixed.) A
-  `STYLE-WARNING` (unused variable, undefined
+  a file compiles (a duplicate definition, a type conflict, package variance, a wrong argument
+  count to a function `defun`'d earlier in the same file) makes it `"error"`, as it makes
+  `asdf:load-system` and `run-tests` fail: ASDF refuses the file and keeps no FASL of it.
+  (`ql:quickload` muffles such a warning, so a system that has only ever been quickloaded can
+  fail here until the warning is fixed.) A `STYLE-WARNING` (unused variable, undefined
   function) never does, and neither does a full warning signalled outside a compilation
-  (while a file loads, or an undefined variable reported at the end)
+  (while a file loads, or an undefined variable reported at the end).
+
+  A wrong argument count is checked against what the compiler knows of the callee at the
+  call, so whether and how it is reported varies. To a function defined in another file it is
+  usually only a `STYLE-WARNING`. To one defined later -- in the same file or a file loaded
+  after it -- while the worker holds no definition of it, or to one declaimed `notinline` (as
+  most of UIOP's and ASDF's functions are), it is not checked at all, as long as nothing has
+  declaimed its type. When a reload recompiles the file, a call to a function defined later is
+  checked against the definition the worker already holds, not the one in the file; a call to
+  one `defun`'d earlier in the same file is checked against the file's. A load that succeeds
+  is no proof that every call has the right number of arguments
 - `duration_ms` (integer): load time in milliseconds
-- `warnings` (integer): number of warnings kept, full and style together (when loaded; on an
-  error, those recorded before it, when there were any). SBCL's `redefining X in DEFUN`
-  notices are left out, on a first load and a reload alike: redefining is ordinary Common Lisp
-  development, and a reload exists to do it. Nothing else is left out or merged: every warning
-  signalled is counted, so one that SBCL signals twice counts twice (an unused variable in a
-  `defmacro`, which it compiles once for the rest of the file and once for the FASL). Two
-  records that read the same may equally be two warnings, and nothing in them tells which
+- `warnings` (integer): number of warnings kept, full and style together (when loaded; on an error,
+  those recorded before it, when there were any). SBCL's `redefining X in DEFUN` notices, and its
+  other `redefining X in ...` notices, are left out, on a first load and a reload alike: redefining
+  is ordinary Common Lisp development, and a reload exists to do it. That includes one file
+  replacing another file's definition -- a name taken in with `:import-from` and then defined again,
+  say -- which plain `asdf:load-system` reports as `redefining`: here nothing reports it. Nothing
+  else is left out or merged: every warning signalled is counted, so one that SBCL signals twice
+  counts twice (an unused variable in a `defmacro`, which it compiles once for the rest of the file
+  and once for the FASL). Two records that read the same may equally be two warnings, and nothing in
+  them tells which
 - `warning_records` (array, when there are any): one object per warning kept, in the order
   signalled:
   - `severity`: `"warning"` or `"style-warning"`
