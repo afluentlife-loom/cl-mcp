@@ -608,8 +608,9 @@ them."
                   ;; An error failed the compile, and nothing is wrong with the
                   ;; worker: a fresh one would meet the same file.
                   ((typep condition 'test-system-compile-failed)
-                   (format nil "~A~%~%Hint: the file did not compile; the compiler ~
-                                output above says why. Fix it and run the tests again."
+                   (format nil "~A~%~%Hint: the file did not compile. The compiler ~
+                                output above is its last lines only; the cause may be ~
+                                earlier in it. Fix the file and run the tests again."
                            text))
                   (t
                    (format nil "~A~%~%Hint: the worker process may have a broken ~

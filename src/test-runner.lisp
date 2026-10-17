@@ -66,9 +66,9 @@ Returns:
   test-op that runs the root suite skips them.  The summary then says PASS, BUT
   N SUITES ARE OUTSIDE THE ROOT SUITE
 - warning_records (array, LOAD FAILED only, present when any) -- the full
-  warnings ASDF refused a test-system file for, as load-system's
-  warning_records: each with fails_compile true and, where the compiler has a
-  place, file, line and form.  The summary lists them with their places under
+  warnings ASDF refused a file the load compiled for (a dependency's too), as
+  load-system's warning_records: each with fails_compile true and, where the
+  compiler has a place, file, line and form.  The summary lists them with their places under
   Warnings, and its hint says to fix the file, as it does for a file that did
   not compile for an error alone -- or, for package variance alone, to get a
   fresh worker

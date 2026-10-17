@@ -1353,7 +1353,7 @@ Output:
   ARE OUTSIDE THE ROOT SUITE`, how to nest them with `:in`, and, for one that already says
   `:in` the root, the `:import-from` that makes its file load after the root's
 - `warning_records` (array, `✗ LOAD FAILED` only, present when any): the full warnings ASDF
-  refused a test-system file for, as the objects of load-system's `warning_records` (see
+  refused a file the load compiled for (a dependency's file too), as the objects of load-system's `warning_records` (see
   there), each with `fails_compile` true. The summary lists them with their places under
   `Warnings (N) -- ASDF refuses a file that compiles with a WARNING:`, and its hint says to
   fix the file and run again, as it does for a file that did not compile for an error alone;
