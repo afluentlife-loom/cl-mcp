@@ -11,14 +11,17 @@
 
 (defun %in-compilation-unit-p ()
   "True when a compilation unit is open on this thread.  SBCL keeps the open
-unit in SB-C::*COMPILATION-UNIT*; releases before it (2.1, for one) only a flag,
-SB-C::*IN-COMPILATION-UNIT*.  Either may be absent, and neither is bound to
-anything but NIL outside a unit."
-  (flet ((open-p (name)
-           (let ((variable (find-symbol name "SB-C")))
-             (and variable (boundp variable) (symbol-value variable) t))))
-    (or (open-p "*COMPILATION-UNIT*")
-        (open-p "*IN-COMPILATION-UNIT*"))))
+unit in SB-C::*COMPILATION-UNIT* (2.4.8 on); releases before it only a flag,
+SB-C::*IN-COMPILATION-UNIT*.  Neither is bound to anything but NIL outside a
+unit.  When an SBCL has neither, the answer is T: an own unit always, which
+counts a refused compile twice, rather than none inside an outer unit, which
+would lose the end-of-unit report from the caller's capture."
+  (let ((variables (remove nil (mapcar (lambda (name) (find-symbol name "SB-C"))
+                                       '("*COMPILATION-UNIT*" "*IN-COMPILATION-UNIT*")))))
+    (or (null variables)
+        (some (lambda (variable)
+                (and (boundp variable) (symbol-value variable) t))
+              variables))))
 
 (defun call-with-own-compilation-unit (thunk)
   "Call THUNK, an ASDF operation, so that the compiler's end-of-unit report --
@@ -33,7 +36,9 @@ is.  Only inside a unit opened earlier does THUNK get one of its own
 once for every unit the abort unwinds through, so a file ASDF refuses would be
 reported as 'caught 2 fatal ERROR conditions' where ASDF by itself reports 1.
 Inside an outer unit that second count remains, the price of reporting there
-at all."
+at all.  None of load-system's and run-tests' entry points runs inside one: the
+tools run them on a deadline thread or the worker's init thread, where no unit
+is open."
   (if (%in-compilation-unit-p)
       (with-compilation-unit (:override t)
         (funcall thunk))
