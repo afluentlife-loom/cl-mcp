@@ -819,12 +819,118 @@
                  (when first
                    (ok (string= "SYSTEM-LOAD" (gethash "test_name" first))
                        "synthetic test_name is SYSTEM-LOAD")
-                   (ok (search "pool-kill-worker" (gethash "reason" first))
-                       "reason carries the recovery hint")
+                   (ok (search "did not compile" (gethash "reason" first))
+                       "reason carries the recovery hint: the file is to fix")
                    (ok (search system-name (gethash "description" first))
                        "description names the offending system")))))
         (ignore-errors (asdf:clear-system system-name))
         (ignore-errors (uiop:delete-directory-tree tmp-dir :validate t))))))
+
+(defun %call-with-warning-test-system (body thunk)
+  "Make the ASDF system clmcp-test-warn-fixture, whose one file dup.lisp holds
+BODY after its package forms, call THUNK with the system's name, and remove
+everything again."
+  (let* ((root (uiop:ensure-directory-pathname
+                (uiop:merge-pathnames*
+                 (format nil "clmcp-test-warn-~36R/"
+                         (random most-positive-fixnum (make-random-state t)))
+                 (uiop:temporary-directory))))
+         (system "clmcp-test-warn-fixture")
+         (asd (uiop:merge-pathnames* "clmcp-test-warn-fixture.asd" root)))
+    (flet ((fixture-dir-p (path)
+             (search "clmcp-test-warn-" (namestring path))))
+      (unwind-protect
+           (progn
+             (ensure-directories-exist root)
+             (with-open-file (out asd :direction :output :if-exists :supersede)
+               (write-string "(defsystem \"clmcp-test-warn-fixture\"
+  :components ((:file \"dup\")))" out))
+             (with-open-file (out (uiop:merge-pathnames* "dup.lisp" root)
+                                  :direction :output :if-exists :supersede)
+               (format out "(defpackage #:clmcp-test-warn-fixture (:use #:cl))~%~
+                            (in-package #:clmcp-test-warn-fixture)~%~A~%"
+                       body))
+             (asdf:load-asd asd)
+             (funcall thunk system))
+        (asdf:clear-system system)
+        (ignore-errors (delete-package "CLMCP-TEST-WARN-FIXTURE"))
+        (uiop:delete-directory-tree root :validate #'fixture-dir-p
+                                         :if-does-not-exist :ignore)
+        (ignore-errors
+         (uiop:delete-directory-tree (asdf:apply-output-translations root)
+                                     :validate #'fixture-dir-p
+                                     :if-does-not-exist :ignore))))))
+
+(defun %first-failure-reason (result)
+  "Return the reason of RESULT's first failed test."
+  (gethash "reason" (aref (gethash "failed_tests" result) 0)))
+
+(deftest run-tests-load-failure-from-a-warning-names-its-place
+  ;; ASDF refuses a file that compiles with a full WARNING.  The file is what
+  ;; has to change, so the hint sends the caller there, not to a fresh worker,
+  ;; and the warning comes with its place, as load-system gives it.
+  (%call-with-warning-test-system
+   "(defun helper () 1)
+(defun helper () 2)"
+   (lambda (system)
+     (let* ((result (run-tests system))
+            (records (coerce (gethash "warning_records" result) 'list))
+            (reason (%first-failure-reason result))
+            (text (gethash "text" (aref (gethash "content"
+                                                 (build-run-tests-response result))
+                                        0))))
+       (ok (equal "load-error" (gethash "framework" result)))
+       (testing "the warning ASDF refused the file for is recorded with its place"
+         (ok (eql 1 (length records)))
+         (let ((record (first records)))
+           (ok (gethash "fails_compile" record))
+           (ok (search "Duplicate definition for HELPER" (gethash "message" record)))
+           (ok (search "dup.lisp" (gethash "file" record)))
+           (ok (eql 4 (gethash "line" record)) "the line of the second definition")
+           (ok (equal "(defun helper)" (gethash "form" record)))))
+       (testing "the hint is to fix the file, not to replace the worker"
+         (ok (search "fix the warning" reason))
+         (ok (not (search "broken package state" reason))))
+       (testing "the text lists the warning with its place"
+         (ok (search "ASDF refuses a file that compiles with a WARNING" text))
+         (ok (search "dup.lisp:" text))
+         (ok (search "(defun helper)" text)))))))
+
+(deftest run-tests-load-failure-from-a-compile-error-sends-the-caller-to-the-file
+  ;; A file the compiler cannot read fails to compile without any warning to
+  ;; record.  The worker is still fine and the file still has to change.
+  (%call-with-warning-test-system
+   "(defun helper ( 1)"
+   (lambda (system)
+     (let* ((result (run-tests system))
+            (reason (%first-failure-reason result)))
+       (ok (equal "load-error" (gethash "framework" result)))
+       (ok (null (gethash "warning_records" result)) "no warning to record")
+       (ok (search "did not compile" reason))
+       (ok (search "READ error" reason) "the compiler output the hint points to says why")
+       (ok (not (search "broken package state" reason)))
+       (ok (not (search "pool-kill-worker" reason)))))))
+
+(deftest load-failure-hint-for-package-variance-is-a-fresh-worker
+  ;; The one warning a fresh worker cures: the file is as its author wants it,
+  ;; and the worker still exports what the file no longer declares.
+  (let* ((condition (make-condition
+                     'cl-mcp/src/test-runner-core::test-system-compile-failed
+                     :format-control "COMPILE-FILE-ERROR while compiling"
+                     :format-arguments nil
+                     :records (list (let ((record (make-hash-table :test #'equal)))
+                                      (setf (gethash "class" record)
+                                            "SB-INT:PACKAGE-AT-VARIANCE"
+                                            (gethash "severity" record) "warning"
+                                            (gethash "fails_compile" record) t
+                                            (gethash "message" record)
+                                            "PROBE also exports the following symbols")
+                                      record))))
+         (reason (%first-failure-reason
+                  (cl-mcp/src/test-runner-core:make-load-failure-result "probe/tests"
+                                                                          condition))))
+    (ok (search "pool-kill-worker" reason))
+    (ok (not (search "fix the warning" reason)))))
 
 (deftest build-run-tests-response-uses-load-failed-banner
   (testing "load-error framework renders as ✗ LOAD FAILED in summary"

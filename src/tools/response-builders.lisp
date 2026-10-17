@@ -768,6 +768,18 @@ Raw stdout/stderr are kept in structured fields only (not in content text)."
                        (when (gethash "reason" fail)
                          (format s "     Reason: ~A~%"
                                  (gethash "reason" fail)))))
+            ;; A test system refused for a warning: the warning with its
+            ;; place, written as load-system writes it.
+            (let ((refusing (remove-if-not
+                             #'%fails-compile-p
+                             (coerce (or (gethash "warning_records" test-result) #())
+                                     'list))))
+              (when refusing
+                (format s "~%Warnings (~D) -- ASDF refuses a file that compiles with a ~
+                           WARNING:"
+                        (length refusing))
+                (%write-full-warnings s refusing)
+                (terpri s)))
             ;; The fallback's only verdict is what the runner printed, and
             ;; content[].text is all a client shows: without its tail here,
             ;; "read stdout" pointed at a field nobody sees.
@@ -788,7 +800,7 @@ Raw stdout/stderr are kept in structured fields only (not in content text)."
                     "duration_ms" duration "failed_tests" failed-tests-vector)))
       (dolist (field '("success" "stdout" "stderr" "debug_output" "passed_tests"
                        "counts_available" "skipped_tests" "unreached_tests"
-                       "suites_outside_root"))
+                       "suites_outside_root" "warning_records"))
         (multiple-value-bind (value presentp)
             (gethash field test-result)
           (when presentp (setf (gethash field response) value))))
