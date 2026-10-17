@@ -276,19 +276,21 @@ Output fields:
   error, adds a hint to get a fresh worker with `pool-kill-worker`
 - `system` (string): echoed system name
 - `status` (string): `"loaded"`, `"timeout"`, or `"error"`. A full `WARNING` signalled while
-  a file compiles (a wrong argument count to a function defined earlier in the same file, or
-  declaimed `ftype` or `inline` before the call; a duplicate definition, type conflict, package
-  variance) makes it `"error"`, as it makes
+  a file compiles (a duplicate definition, a type conflict, package variance, a wrong argument
+  count to a function `defun`'d earlier in the same file) makes it `"error"`, as it makes
   `asdf:load-system` and `run-tests` fail: ASDF refuses the file and keeps no FASL of it.
   (`ql:quickload` muffles such a warning, so a system that has only ever been quickloaded can
   fail here until the warning is fixed.) A `STYLE-WARNING` (unused variable, undefined
-  function, a wrong argument count to any other function defined in another file) never does,
-  and neither does a full warning signalled outside a compilation (while a file loads, or an
-  undefined variable reported at the end). A wrong argument count to a function defined later
-  in the same file is not reported the first time the file compiles in a worker; on a reload
-  it is a `STYLE-WARNING`, checked against the definition the worker already holds rather than
-  the one in the file. So a load that succeeds is no proof that every call has the right
-  number of arguments
+  function) never does, and neither does a full warning signalled outside a compilation
+  (while a file loads, or an undefined variable reported at the end).
+
+  A wrong argument count is checked against what the compiler knows of the callee at the
+  call, so whether and how it is reported varies. To a function defined in another file it is
+  usually only a `STYLE-WARNING`. To one defined later while the worker holds no definition of
+  it yet, or to one declaimed `notinline` (as UIOP's and ASDF's functions are), it is not
+  checked at all. When a reload recompiles the file, the call
+  is checked against the definition the worker already holds, not the one in the file. A load
+  that succeeds is no proof that every call has the right number of arguments
 - `duration_ms` (integer): load time in milliseconds
 - `warnings` (integer): number of warnings kept, full and style together (when loaded; on an
   error, those recorded before it, when there were any). SBCL's `redefining X in DEFUN`
