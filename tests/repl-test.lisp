@@ -214,6 +214,82 @@
           (declare (ignore printed value stdout))
           (ok (search (symbol-name var) stderr :test #'char-equal)))))))
 
+(defun %call-with-warning-system (body thunk)
+  "Make the ASDF system clmcp-repl-warn-fixture, whose one file holds BODY in its
+own package, call THUNK with the system's name and its file's pathname, and
+remove everything again."
+  (let* ((root (uiop:ensure-directory-pathname
+                (uiop:merge-pathnames*
+                 (format nil "clmcp-repl-warn-~36R/"
+                         (random most-positive-fixnum (make-random-state t)))
+                 (uiop:temporary-directory))))
+         (system "clmcp-repl-warn-fixture")
+         (package-name "CLMCP-REPL-WARN-FIXTURE")
+         (asd (uiop:merge-pathnames* "clmcp-repl-warn-fixture.asd" root))
+         (file (uiop:merge-pathnames* "body.lisp" root)))
+    (unwind-protect
+         (progn
+           (ensure-directories-exist root)
+           (with-open-file (out asd :direction :output :if-exists :supersede)
+             (write-string "(defsystem \"clmcp-repl-warn-fixture\"
+  :components ((:file \"body\")))" out))
+           (with-open-file (out file :direction :output :if-exists :supersede)
+             (format out "(defpackage #:clmcp-repl-warn-fixture (:use #:cl))~%~
+                          (in-package #:clmcp-repl-warn-fixture)~%~A~%"
+                     body))
+           (asdf:load-asd asd)
+           (funcall thunk system file))
+      (asdf:clear-system system)
+      (ignore-errors (delete-package package-name))
+      ;; Both paths are computed, so each deletion checks it is the fixture's.
+      (flet ((fixture-dir-p (path)
+               (search "clmcp-repl-warn-" (namestring path))))
+        (uiop:delete-directory-tree root :validate #'fixture-dir-p
+                                         :if-does-not-exist :ignore)
+        ;; ASDF's FASLs of it, in its output-translation cache.
+        (ignore-errors
+         (uiop:delete-directory-tree (asdf:apply-output-translations root)
+                                     :validate #'fixture-dir-p
+                                     :if-does-not-exist :ignore))))))
+
+(deftest repl-eval-asdf-load-system-refuses-a-full-warning
+  ;; compile-file's failure flag is what ASDF fails a build on, and a full
+  ;; WARNING muffled by an outer handler is never counted towards it: muffled,
+  ;; asdf:load-system in repl-eval loaded a file that ASDF itself refuses.
+  (%call-with-warning-system
+   "(defun two-arguments (a b) (+ a b))
+(defun wrong-arity () (two-arguments 1 2 3))"
+   (lambda (system file)
+     (testing "compile-file reports the compile as failed"
+       ;; Under a name of its own: a body.fasl beside the source would be the
+       ;; one ASDF loads when output translations are disabled.
+       (ok (equal "t" (repl-eval (format nil "(nth-value 2 (compile-file ~S :output-file ~S))"
+                                         (namestring file)
+                                         (namestring (make-pathname :name "direct"
+                                                                    :type "fasl"
+                                                                    :defaults file)))))))
+     (testing "asdf:load-system fails with ASDF's own error"
+       (multiple-value-bind (printed value stdout stderr error-context)
+           ;; No :force: under rove's test-op this is a nested OPERATE, which
+           ;; refuses one, and the system is new to ASDF anyway.
+           (repl-eval (format nil "(asdf:load-system ~S)" system))
+         (declare (ignore value stdout))
+         (ok (search "COMPILE-FILE-ERROR" printed))
+         (ok (search "COMPILE-FILE-ERROR" (getf error-context :condition-type)))
+         (ok (search "called with three arguments" stderr)
+             "the warning's text is still in stderr"))))))
+
+(deftest repl-eval-muffles-a-full-warning-outside-a-compile
+  (testing "a WARN in evaluated code is written once to stderr and evaluation goes on"
+    (multiple-value-bind (printed value stdout stderr)
+        (repl-eval "(progn (warn \"plain probe warning\") :after)")
+      (declare (ignore value stdout))
+      (ok (equal ":after" (string-downcase printed)))
+      (let ((first (search "plain probe warning" stderr)))
+        (ok first "the warning is in stderr")
+        (ok (eql first (search "plain probe warning" stderr :from-end t))
+            "and only once")))))
+
 (deftest repl-eval-suppresses-compiler-trace-output
   (testing "compiler trace output is discarded"
     #+sbcl

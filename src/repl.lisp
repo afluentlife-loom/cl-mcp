@@ -32,6 +32,11 @@ to save changes to files.
 IMPORTANT: For loading ASDF systems, prefer the dedicated 'load-system' tool.
 It handles staleness (force-reload), output suppression, and timeouts automatically.
 Only use repl-eval with (asdf:load-system ...) if you need non-standard load options.
+A full WARNING signalled while a file compiles is left to the compiler, which
+writes it to stderr and counts it, so (asdf:load-system ...) fails on it as it does
+outside repl-eval.  Any other warning is written to stderr as 'Warning: ...' and
+evaluation goes on: an undefined variable, too, which is reported at the end of
+repl-eval's compilation unit, after compile-file has returned.
 
 When the result is a non-primitive object (not a number, string, symbol, or character),
 the response includes:
