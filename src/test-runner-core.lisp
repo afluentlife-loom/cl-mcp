@@ -14,6 +14,13 @@
                 #:discover-asd-in-project)
   (:import-from #:cl-mcp/src/utils/fasls
                 #:delete-same-second-fasls)
+  ;; The warning records load-system reports, so a load refused for a
+  ;; warning names it and its place the same way here.
+  (:import-from #:cl-mcp/src/warning-records
+                #:%make-warning-record
+                #:%warning-record-tables
+                #:%in-project-predicate
+                #:%redefinition-warning-p)
   (:import-from #:cl-mcp/src/utils/deadline
                 #:call-with-deadline-thread)
   (:import-from #:cl-mcp/src/utils/bounded-stream
@@ -498,6 +505,13 @@ of that name was found under the project root either.  A SIMPLE-ERROR, so
 RUN-TESTS reports it as a load failure; its own type, so that report does not
 send the caller to replace a worker that is fine."))
 
+(define-condition test-system-compile-failed (simple-error)
+  ((records :initarg :records :initform '() :reader test-system-compile-failed-records))
+  (:documentation "ASDF refused a file of the test system that compiled with a
+full WARNING.  RECORDS are those warnings as load-system's warning records
+(%WARNING-RECORD-TABLES), each with its place.  Its own type, so the load
+failure sends the caller to the file rather than to a fresh worker."))
+
 (defun %format-load-error (system-name condition stderr)
   "Format a test-system load-failure message.
 When STDERR contains captured compiler output, the tail of it is
@@ -522,49 +536,79 @@ Shows the condition type explicitly to aid root-cause diagnosis."
 RUN-TESTS returns a normal MCP response (failed:1 with a synthetic
 SYSTEM-LOAD entry) instead of letting the condition propagate as an
 opaque RPC-level error.  Mirrors the timeout pattern used by
-%handle-run-tests in worker/handlers.lisp."
-  (make-test-result
-   :passed 0
-   :failed 1
-   :pending 0
-   :framework :load-error
-   :duration 0
-   :failed-tests
-   (vector
-    (make-failure-detail
-     :test-name "SYSTEM-LOAD"
-     :description (format nil "Could not load test system ~A" system-name)
-     :reason
-     (let ((text (or (ignore-errors (princ-to-string condition))
-                     "unprintable condition")))
-       ;; The hint is withheld for a failure that left the image intact -- a
-       ;; concurrent load still holding the ASDF lock, say.  There it is
-       ;; actively harmful: following it aborts work about to finish, and
-       ;; such a condition carries its own, correct advice.
-       (cond
-         ((typep condition 'transient-error) text)
-         ;; Nothing is wrong with the worker: the name is unknown.
-         ((typep condition 'test-system-not-found)
-          (format nil "~A~%~%Hint: ASDF knows no system ~A, and no ~A.asd was ~
-                       found under the project root. Check the name, or ~
-                       register its .asd with load-system or asdf:load-asd, ~
-                       then retry run-tests."
-                  text system-name (asdf:primary-system-name system-name)))
-         ;; FiveAM's own error for a def-suite :in a suite not defined yet:
-         ;; a load-order mistake in the project, not a broken worker.
-         ((search "Unknown suite" text)
-          (format nil "~A~%~%Hint: a (def-suite NAME :in PARENT) loaded before ~
-                       the file that defines PARENT. Make that file load first: in ~
-                       a package-inferred system add (:import-from <the package ~
-                       of PARENT's file>) to the defpackage of the file with the ~
-                       :in; otherwise put PARENT's file earlier in the .asd's ~
-                       components."
-                  text))
-         (t
-          (format nil "~A~%~%Hint: the worker process may have a broken ~
-                       package state. Use pool-kill-worker to get a fresh ~
-                       worker, then retry run-tests."
-                  text))))))))
+%handle-run-tests in worker/handlers.lisp.
+A file refused for a warning (TEST-SYSTEM-COMPILE-FAILED) also gives the result
+\"warning_records\": those warnings, each with its place, as load-system reports
+them."
+  (let* ((records (and (typep condition 'test-system-compile-failed)
+                       (test-system-compile-failed-records condition)))
+         (result
+           (make-test-result
+            :passed 0
+            :failed 1
+            :pending 0
+            :framework :load-error
+            :duration 0
+            :failed-tests
+            (vector
+             (make-failure-detail
+              :test-name "SYSTEM-LOAD"
+              :description (format nil "Could not load test system ~A" system-name)
+              :reason
+              (let ((text (or (ignore-errors (princ-to-string condition))
+                              "unprintable condition")))
+                ;; The hint is withheld for a failure that left the image intact
+                ;; -- a concurrent load still holding the ASDF lock, say.  There
+                ;; it is actively harmful: following it aborts work about to
+                ;; finish, and such a condition carries its own, correct advice.
+                (cond
+                  ((typep condition 'transient-error) text)
+                  ;; Nothing is wrong with the worker: the name is unknown.
+                  ((typep condition 'test-system-not-found)
+                   (format nil "~A~%~%Hint: ASDF knows no system ~A, and no ~A.asd was ~
+                                found under the project root. Check the name, or ~
+                                register its .asd with load-system or asdf:load-asd, ~
+                                then retry run-tests."
+                           text system-name (asdf:primary-system-name system-name)))
+                  ;; Nothing in the file is wrong: the worker still exports what
+                  ;; the file no longer declares, and only a fresh worker cures
+                  ;; that.
+                  ((and records
+                        (every (lambda (record)
+                                 (equal "SB-INT:PACKAGE-AT-VARIANCE"
+                                        (gethash "class" record)))
+                               records))
+                   (format nil "~A~%~%Hint: package-variance warnings mean the running ~
+                                image has stale exports. Use pool-kill-worker to get a ~
+                                fresh worker, then retry run-tests."
+                           text))
+                  ;; The warning is the cause, and a fresh worker would meet it
+                  ;; again -- unless it is about what this worker holds.
+                  (records
+                   (format nil "~A~%~%Hint: fix the warning~P ASDF refused the file ~
+                                for, listed under Warnings below, and run the tests ~
+                                again. A warning about a definition this worker ~
+                                already holds -- a structure's layout, say -- needs a ~
+                                fresh worker instead: pool-kill-worker, then run-tests."
+                           text (length records)))
+                  ;; FiveAM's own error for a def-suite :in a suite not defined
+                  ;; yet: a load-order mistake in the project, not a broken worker.
+                  ((search "Unknown suite" text)
+                   (format nil "~A~%~%Hint: a (def-suite NAME :in PARENT) loaded before ~
+                                the file that defines PARENT. Make that file load first: ~
+                                in a package-inferred system add (:import-from <the ~
+                                package of PARENT's file>) to the defpackage of the file ~
+                                with the :in; otherwise put PARENT's file earlier in the ~
+                                .asd's components."
+                           text))
+                  (t
+                   (format nil "~A~%~%Hint: the worker process may have a broken ~
+                                package state. Use pool-kill-worker to get a fresh ~
+                                worker, then retry run-tests."
+                           text)))))))))
+    (when records
+      (setf (gethash "warning_records" result) (coerce records 'vector)))
+    result))
 
 (defun make-resolution-failure-result (condition)
   "Convert a TEST-RESOLUTION-ERROR into a structured test-result so RUN-TESTS
@@ -907,12 +951,20 @@ Package-variance warnings and 'caught N ERROR condition' summaries
 surface to the caller instead of being swallowed into an opaque
 COMPILE-FILE-ERROR."
   (let ((captured-warnings (make-string-output-stream))
-        (captured-stderr (make-string-output-stream)))
+        (captured-stderr (make-string-output-stream))
+        ;; Full warnings signalled while a file compiled: what ASDF refuses a
+        ;; file for.  Recorded in the handler, where the compiler's place for
+        ;; them can still be read.
+        (refusing '()))
     (handler-case
         (handler-bind
             ((warning
               (lambda (c)
-                (format captured-warnings "~A~%" c))))
+                (format captured-warnings "~A~%" c)
+                (when (and *compile-file-truename*
+                           (not (typep c 'style-warning))
+                           (not (%redefinition-warning-p c)))
+                  (push (%make-warning-record c) refusing)))))
           (progn
             ;; As load-system does: a system nobody has registered yet --
             ;; its .asd freshly written under the project root -- is found
@@ -964,16 +1016,28 @@ COMPILE-FILE-ERROR."
         (let* ((warnings-text (get-output-stream-string captured-warnings))
                (stderr-text (get-output-stream-string captured-stderr))
                (combined (concatenate 'string warnings-text stderr-text)))
-          (if (and (typep c 'asdf:missing-component)
-                   (null (asdf:find-system system-name nil)))
-              ;; Not a load that went wrong: there is no such system.  Its
-              ;; own condition, so the result does not blame the worker.
-              (error 'test-system-not-found
-                     :format-control "~A"
-                     :format-arguments
-                     (list (%format-load-error system-name c combined)))
-              (error "~A"
-                     (%format-load-error system-name c combined))))))))
+          (cond
+            ((and (typep c 'asdf:missing-component)
+                  (null (asdf:find-system system-name nil)))
+             ;; Not a load that went wrong: there is no such system.  Its
+             ;; own condition, so the result does not blame the worker.
+             (error 'test-system-not-found
+                    :format-control "~A"
+                    :format-arguments
+                    (list (%format-load-error system-name c combined))))
+            ;; A file refused for a warning: the warning is the cause, and
+            ;; its records say where it is.
+            ((and (typep c 'uiop:compile-file-error) refusing)
+             (error 'test-system-compile-failed
+                    :format-control "~A"
+                    :format-arguments
+                    (list (%format-load-error system-name c combined))
+                    :records (%warning-record-tables
+                              (reverse refusing)
+                              :in-project (%in-project-predicate system-name))))
+            (t
+             (error "~A"
+                    (%format-load-error system-name c combined)))))))))
 
 (defun %rove-result-symbol (name)
   "Return Rove's ROVE/CORE/RESULT symbol NAME, resolved at run time since Rove

@@ -65,6 +65,12 @@ Returns:
   the root suite (the one named after the primary system): run here, but a
   test-op that runs the root suite skips them.  The summary then says PASS, BUT
   N SUITES ARE OUTSIDE THE ROOT SUITE
+- warning_records (array, LOAD FAILED only, present when any) -- the full
+  warnings ASDF refused a test-system file for, as load-system reports them:
+  severity, class, message, fails_compile, in_project and, where the compiler
+  has a place, file, line and form.  The summary lists them with their places
+  under Warnings, and its hint says to fix the file -- or, for package variance
+  alone, to get a fresh worker
 - framework (string)
 - duration_ms (integer)
 - stdout (string, present when non-empty) — captured test standard output

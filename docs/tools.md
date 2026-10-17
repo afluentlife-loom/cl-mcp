@@ -1352,6 +1352,13 @@ Output:
   runs the root suite (the scaffold's does) skips them; the summary says `⚠ PASS, BUT N SUITES
   ARE OUTSIDE THE ROOT SUITE`, how to nest them with `:in`, and, for one that already says
   `:in` the root, the `:import-from` that makes its file load after the root's
+- `warning_records` (array, `✗ LOAD FAILED` only, present when any): the full warnings ASDF
+  refused a test-system file for, in load-system's form (`severity`, `class`, `message`,
+  `fails_compile`, `in_project` and, where the compiler has a place, `file`, `line` and
+  `form`). The summary lists them with their places under `Warnings (N) -- ASDF refuses a
+  file that compiles with a WARNING:`, and its hint says to fix the file and run again; only
+  when every one of them is package variance does it send you to `pool-kill-worker`, since
+  then the file is right and the worker's image is stale
 - `framework` (string): Framework or outcome category used (`"rove"`, `"fiveam"`, `"prove"`, `"asdf"`, `"load-error"`, `"unresolved"`, or `"timeout"`)
 - `counts_available` (boolean, ASDF fallback only): `false` — `asdf:test-system` reports no counts
 - `success` (boolean|null, ASDF fallback only): `false` when `asdf:test-system` signalled; `null` when it
