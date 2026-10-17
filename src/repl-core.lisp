@@ -255,9 +255,16 @@ ERROR-CONTEXT is a plist with structured error info when an error occurs, NIL ot
       (setf (car output-streams) stdout
             (cdr output-streams) stderr))
     (handler-bind ((warning (lambda (w)
-                              (format stderr "~&Warning: ~A~%" w)
-                              (when (find-restart 'muffle-warning)
-                                (invoke-restart 'muffle-warning))))
+                              ;; A full WARNING inside a COMPILE-FILE is declined:
+                              ;; the compiler counts it towards FAILURE-P only when
+                              ;; no outer handler muffles it, and ASDF refuses the
+                              ;; file on that flag.  The compiler writes it to
+                              ;; stderr itself.
+                              (unless (and *compile-file-pathname*
+                                           (not (typep w 'style-warning)))
+                                (format stderr "~&Warning: ~A~%" w)
+                                (when (find-restart 'muffle-warning)
+                                  (invoke-restart 'muffle-warning)))))
                    (package-error
                     (lambda (e)
                       (let* ((raw-msg (format nil "Package error: ~A" e))

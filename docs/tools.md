@@ -136,7 +136,12 @@ Input schema (JSON):
 Output fields:
 - `content`: last value as text
 - `stdout`: concatenated standard output from evaluation
-- `stderr`: concatenated standard error from evaluation
+- `stderr`: concatenated standard error from evaluation. A warning is written here
+  as `Warning: ...` and evaluation goes on, except a full `WARNING` signalled while a
+  file compiles: that one is left to the compiler, which reports it here with its
+  place and counts it, so `compile-file` returns a true failure-p and
+  `(asdf:load-system ...)` fails with `COMPILE-FILE-ERROR`, as either does outside
+  `repl-eval`
 - `result_object_id` (string|null): an opaque id, such as `"o-4f1c9a0e7b2d58c3a91e06f2d7b48c5e-17"`; when the result is a non-primitive object (list, hash-table, CLOS instance, etc.), this ID can be used with `inspect-object` to drill down into its internal structure
 - `result_preview` (object, with `result_object_id`): a lightweight structural preview of the
   result — its kind, type and first elements or slots — shaped like `inspect-object`'s output
