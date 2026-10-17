@@ -60,9 +60,9 @@ A wrong argument count is checked against what the compiler knows of the
 callee at the call, so whether and how it is reported varies.  To a function
 defined in another file it is usually only a STYLE-WARNING.  To one defined
 later -- in the same file or a file loaded after it -- while the worker holds
-no definition of it and nothing has declaimed its type, or to one declaimed
-notinline (as most of UIOP's and ASDF's functions are), it is not checked at
-all.  When a reload recompiles the file, a call to a function defined later is
+no definition of it, or to one declaimed notinline (as most of UIOP's and
+ASDF's functions are), it is not checked at all, as long as nothing has
+declaimed its type.  When a reload recompiles the file, a call to a function defined later is
 checked against the definition the worker already holds, not the one in the
 file; a call to one defun'd earlier in the same file is checked against the
 file's.  A load that succeeds is no proof that every call has the right number
